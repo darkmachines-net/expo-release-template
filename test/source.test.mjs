@@ -3,8 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { prepare, hook, exportBundle } from '../src/source.mjs';
-import { configured, loadConfig } from '../src/config.mjs';
+import { prepare, hook, exportBundle } from '../src/consumer/source.mjs';
+import { configured, loadConfig } from '../src/consumer/config.mjs';
 import { selectRelease } from '../src/engine.mjs';
 import { repository, config, observation, temporary, plan } from './helpers.mjs';
 

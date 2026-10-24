@@ -12,9 +12,9 @@ Add a small [release.config.json](schemas/release.config.schema.json), an EAS pr
 
 Use `npm run release -- validate` to check configuration. `npm run release -- plan --profile production` previews selection by reading GitHub history and EAS public environment values. It requires `gh` authentication and the pinned official EAS CLI on PATH. `--history CONTEXT.json` permits an offline preview with explicit `history` and `environments`. Planning never reserves versions or publishes anything.
 
-Hosted jobs install EAS CLI **25.3.0** using the pinned official Expo GitHub Action. There is no custom installer, bundled EAS lockfile or private EAS API adapter. Ordinary Expo builds use `appVersionSource: remote` and `autoIncrement: true`. Initialize remote counters with official EAS tooling above the verified store/build floors before the first dispatch; the workflow checks those floors before reserving anything.
+Hosted jobs install EAS CLI **25.3.0** using the pinned official Expo GitHub Action. There is no custom installer, bundled EAS lockfile or private EAS API adapter. Ordinary Expo builds use `appVersionSource: remote` and `autoIncrement: true`. Follow [workflow setup](.github/workflows/README.md#set-up-a-consumer) to initialize counters and credentials before the first dispatch.
 
-See the [serverless example](examples/expo-only/README.md) and [consumer interface](docs/interfaces.md).
+See the [serverless example](examples/expo-only/README.md), [consumer contract and hooks](src/consumer/README.md), and [workflow operations](.github/workflows/README.md).
 
 ## Selection and versions
 
@@ -41,12 +41,8 @@ OTA export runs without publishing credentials. A separate protected publisher v
 
 Signing, publication and deployment use separate jobs. Privileged publishers use inert temporary EAS projects and never run consumer scripts. Source checks, Docker builds and OTA exports receive no publishing credentials. EAS cloud build's authenticated source evaluation is its explicit exception. Artifacts must match the current run, source, toolkit, plan, destination and file digests; local and imported receipts are unsupported.
 
-## Failures and cutover
+## Maintenance
 
-Before an external request, the toolkit creates a GitHub deployment record for that operation. After success, it uploads compact immutable evidence and marks only that deployment successful. Missing acknowledgement leaves an outstanding operation. No job rerun or missing evidence authorizes another request.
+Run `npm run check` for documentation lint plus selection, reservations, preparation, trust boundaries, provider contracts, workflow ordering and installation checks. `npm run lint` checks file overviews and JSDoc descriptions on named functions/methods, including public APIs; `npm test` runs the behavioral suite. Tests never dispatch a live release. Keep authored shared implementation plus consumer integration below 3,000 physical lines; report tests, documentation, generated locks and existing application build tools separately.
 
-Use GitHub, EAS and store tools to investigate an interrupted operation. A confirmed terminal failure can be marked `failure` by an operator; a confirmed success requires retaining its actual provider evidence before marking success. `inactive`, absent and error statuses remain blocking. Do not mark a timeout failed merely to unlock a retry. Start a new dispatch after resolution; this toolkit has no replay/recovery CLI.
-
-The cutover starts an empty history. Old plans, signer imports, retained artifact commands, promotions, candidate PRs, local release wrappers and historical runtime reconstruction are removed. Both consumers must receive a fresh native release before subsequent OTA updates. See [cutover instructions](docs/cutover.md).
-
-Run `npm test` for selection, reservations, preparation, trust boundaries, provider contracts, workflow ordering and installation checks. Tests never dispatch a live release. Keep authored shared implementation plus consumer integration at or below 3,000 physical lines; report tests, documentation, generated locks and existing application build tools separately.
+Keep documentation with the code it describes, in file/function comments or the owning module's README. Update it with behavior changes and link to its owner rather than duplicating contracts. See [workflow operations](.github/workflows/README.md#immutable-evidence-and-interrupted-operations) for current history and interrupted-operation handling.

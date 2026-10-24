@@ -42,11 +42,13 @@ export function nextPair(floor) {
 export function selectRelease(config, profile, observation, history = {}, rebuild = false) {
   assert(config.profiles[profile], 'Unknown release profile.');
   const baselines = history.baselines ?? {};
+  /** Keep the higher configured or previously reserved version, including failed reservations. */
   const floor = (kind, configured) => [configured, history[kind]?.version ?? configured].sort(compareVersions).at(-1);
   const mobileFloor = config.mobile && floor('mobile', config.mobile.versionFloor);
   const serverFloor = config.server && floor('server', config.server.versionFloor);
   const breaking = !!config.mobile && (!history.mobile || history.mobile.family !== observation.family);
   const runtime = config.mobile ? String(versionParts(breaking ? increment(mobileFloor, 'major') : mobileFloor)[0]) : null;
+  /** Require a successful build baseline for this profile, runtime and target fingerprint. */
   const compatible = target => {
     const previous = baselines[`${profile}/build/${target.id}`];
     return previous?.runtime === runtime && previous.fingerprint === observation.fingerprints[profile][target.platform];
@@ -68,6 +70,7 @@ export function selectRelease(config, profile, observation, history = {}, rebuil
     ...(native ? config.mobile.targets.flatMap(t => [`build/${t.id}`, ...(config.profiles[profile].submit ? [`submit/${t.id}`] : [])]) : []),
     ...ota.map(platform => `ota/${platform}`),
   ].map(key => `${profile}/${key}`);
+  /** Remove the profile prefix so an uncertain request blocks the same operation across profiles. */
   const operation = key => key.slice(key.indexOf('/') + 1);
   const unresolved = (history.pending ?? []).filter(key => operations.some(selected => operation(selected) === operation(key)));
   assert(!unresolved.length, `Resolve uncertain operations in GitHub/provider tools before continuing: ${unresolved.join(', ')}`);

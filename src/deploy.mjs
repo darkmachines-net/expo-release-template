@@ -6,7 +6,15 @@ import { isIPv4 } from 'node:net';
 import { assert } from './engine.mjs';
 import { run } from './io.mjs';
 
-/** Validate the existing private deployment transport without inventing a destination. */
+/**
+ * Validate the existing private deployment transport without inventing a destination.
+ * GitHub variables: DEPLOY_HOST, DEPLOY_URL, DEPLOY_WG_ADDRESS, DEPLOY_WG_PUBLIC_KEY.
+ * GitHub secrets: DEPLOY_WG_ENDPOINT, DEPLOY_WG_PRIVATE_KEY, DEPLOY_TOKEN.
+ * Preserve the consumer's existing peer, service and credentials when configuring these values.
+ * @param {object} spec Configured webhook path and service identity.
+ * @param {object} env Deployment job environment containing the variables and secrets above.
+ * @returns {object} Validated connection values, including a parsed HTTPS URL.
+ */
 export function deploymentInputs(spec, env) {
   const value = Object.fromEntries(Object.entries({ host: 'DEPLOY_HOST', address: 'DEPLOY_WG_ADDRESS', endpoint: 'DEPLOY_WG_ENDPOINT',
     privateKey: 'DEPLOY_WG_PRIVATE_KEY', publicKey: 'DEPLOY_WG_PUBLIC_KEY', token: 'DEPLOY_TOKEN', url: 'DEPLOY_URL' }).map(([k, name]) => [k, env[name]]));
@@ -34,6 +42,7 @@ export function verifyDeploymentResponse(output, service) {
 export function connectAndDeploy(spec, env = process.env, execute = run) {
   const value = deploymentInputs(spec, env), directory = fs.mkdtempSync(path.join(os.tmpdir(), 'expo-deploy-'));
   const key = path.join(directory, 'wireguard.key'), network = 'expo-release';
+  /** Bound transport commands and capture output so private deployment values are not streamed to logs. */
   const command = (binary, args, options = {}) => execute(binary, args, { timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'], ...options });
   let created = false;
   try {

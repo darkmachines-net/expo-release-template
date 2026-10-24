@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /** @file Read-only configuration validation and release preview; execution lives in GitHub Actions. */
 import { parseArgs } from 'node:util';
-import { loadConfig, configured } from '../src/config.mjs';
+import { loadConfig, configured } from '../src/consumer/config.mjs';
 import { selectRelease } from '../src/engine.mjs';
-import { inspect } from '../src/source.mjs';
+import { inspect } from '../src/consumer/source.mjs';
 import { github, loadHistory } from '../src/github.mjs';
 import { readJson, run } from '../src/io.mjs';
 import { readEnvironments } from '../src/eas.mjs';

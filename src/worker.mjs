@@ -2,9 +2,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { assert } from './engine.mjs';
-import { loadConfig, verifyPins, verifyPlan } from './config.mjs';
+import { loadConfig, verifyPins, verifyPlan } from './consumer/config.mjs';
 import { git, run, readJson, writeJson, sourceEnvironment, seal, verify, hash } from './io.mjs';
-import { prepare, hook, exportBundle } from './source.mjs';
+import { prepare, hook, exportBundle } from './consumer/source.mjs';
 import { github, loadHistory, reserve, begin, complete } from './github.mjs';
 import { eas, publisher, readEnvironments, verifyBuildFloors, cloudBuild, verifyBuild, submit, update } from './eas.mjs';
 import { buildServer, commandBuild } from './build.mjs';

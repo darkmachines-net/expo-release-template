@@ -2,11 +2,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { hash, inputIdentity, run, git, readJson, writeJson, within, sourceEnvironment } from './io.mjs';
-import { assert, selectRelease } from './engine.mjs';
+import { hash, inputIdentity, run, git, readJson, writeJson, within, sourceEnvironment } from '../io.mjs';
+import { assert, selectRelease } from '../engine.mjs';
 import { configured } from './config.mjs';
 
-/** Invoke a declared argv hook with a JSON request and a credential-free environment. */
+/**
+ * Invoke a declared argv hook with a JSON request and a credential-free environment.
+ * Send one object on stdin and parse one stdout object (empty output means {});
+ * hooks must send diagnostic/tool output to stderr. Missing hooks return {}.
+ * @param {string} root Consumer checkout and hook working directory.
+ * @param {object} config Validated release configuration containing optional hook argv arrays.
+ * @param {string} action Hook name; see this module's README for each request contract.
+ * @param {object} request Action-specific fields added to the common root/action envelope.
+ * @param {object} [extraEnvironment] Declared public inputs, filtered through sourceEnvironment.
+ * @returns {object} The hook's parsed response; hooks never publish or persist release state.
+ */
 export function hook(root, config, action, request, extraEnvironment = {}) {
   const command = config.hooks?.[action];
   if (!command) return {};
