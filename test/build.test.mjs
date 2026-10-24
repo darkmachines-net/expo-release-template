@@ -8,6 +8,7 @@ import { plan, temporary } from './helpers.mjs';
 function harness(t) {
   const root = temporary(t), release = plan(), calls = [];
   release.config.server.smoke.services = { database: { image: 'postgres:16-alpine', environment: { POSTGRES_PASSWORD: 'disposable' } } };
+  /** Record invocations without Docker and supply the expected loopback port binding. */
   const execute = (binary, args, options) => {
     calls.push({ binary, args, options });
     return args[0] === 'port' ? '127.0.0.1:43210' : '';

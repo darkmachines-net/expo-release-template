@@ -84,7 +84,12 @@ export function verifyBuild(build, plan, target) {
   return build;
 }
 
-/** Enqueue exactly once and wait using public read commands; errors never start another build. */
+/**
+ * Enqueue exactly once and wait using public read commands; errors never start another build.
+ * EAS Build evaluates the consumer's source configuration with EXPO_TOKEN for existing
+ * EAS-managed credentials. This authenticated evaluation is the explicit exception to
+ * source-only execution; privileged submit/update publishers instead use inert projects.
+ */
 export async function cloudBuild(root, plan, target, command = eas) {
   const profile = plan.config.profiles[plan.profile];
   const result = command(['build', '--platform', target.platform, '--profile', profile.easProfile, '--message', `release:${plan.run}:${target.id}`,

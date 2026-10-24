@@ -8,7 +8,9 @@ import { plan } from './helpers.mjs';
 function client({ deployments = [], states = {}, failAt } = {}) {
   const calls = [];
   return { calls,
+    /** Return the supplied deployment history and record the requested list route. */
     async pages(route) { calls.push(['pages', route]); return deployments; },
+    /** Return deterministic IDs/statuses or inject a lost connection at the selected write. */
     async api(method, route, body) {
       calls.push([method, route, body]);
       if (failAt?.(method, route)) throw new Error('connection lost');
@@ -16,6 +18,7 @@ function client({ deployments = [], states = {}, failAt } = {}) {
       if (route === 'git/tags') return { sha: 'd'.repeat(40) };
       return { id: 42 };
     },
+    /** Capture evidence ordering and optionally simulate an upload with unknown outcome. */
     async evidence(id, name, body) { calls.push(['evidence', id, name, body]); if (failAt?.('evidence', name)) throw new Error('connection lost'); }
   };
 }
@@ -33,7 +36,10 @@ test('reservation writes immutable annotated tags before evidence', async () => 
 });
 
 test('lost reservation acknowledgement is not repeated', async () => {
-  const fake = client({ failAt: (_, route) => route === 'git/refs' });
+  const fake = client({
+    /** Lose acknowledgement while creating a reservation ref. */
+    failAt: (_, route) => route === 'git/refs'
+  });
   await assert.rejects(reserve(fake, plan()), /connection lost/);
   assert.equal(fake.calls.filter(call => call[1] === 'git/refs').length, 1);
   assert.ok(!fake.calls.some(call => call[1] === 'releases'));
@@ -122,7 +128,10 @@ test('immutable evidence precedes success and failure leaves the intent outstand
   const fake = client(); await complete(fake, plan(), 'ota/ios', 77, { id: 'provider' });
   assert.deepEqual(fake.calls.map(call => call[0]), ['GET', 'evidence', 'POST']);
   assert.equal(fake.calls.at(-1)[2].auto_inactive, false);
-  const failed = client({ failAt: method => method === 'evidence' });
+  const failed = client({
+    /** Fail evidence retention so success cannot be recorded. */
+    failAt: method => method === 'evidence'
+  });
   await assert.rejects(complete(failed, plan(), 'ota/ios', 77, {}));
   assert.ok(!failed.calls.some(call => call[0] === 'POST'));
 });
@@ -139,24 +148,38 @@ test('legacy records cannot become current baselines or reservations', () => {
 });
 
 test('history reads only the fresh namespace and rejects lightweight reservation tags', async () => {
-  const fake = { pages: async () => [], api: async (_, route) => {
-    assert.equal(route, 'git/matching-refs/tags/expo-release/v3/run/'); return [{ object: { type: 'commit' } }];
-  } };
+  const fake = {
+    /** Supply empty deployment history; this test exercises reservation validation only. */
+    pages: async () => [],
+    /** Return a lightweight tag from the current namespace to test annotated-tag enforcement. */
+    api: async (_, route) => {
+      assert.equal(route, 'git/matching-refs/tags/expo-release/v3/run/'); return [{ object: { type: 'commit' } }];
+    }
+  };
   await assert.rejects(loadHistory(fake), /annotated/);
 });
 
 test('transport never retries writes or interprets permission failure as absence', async () => {
   let requests = 0;
-  const api = github('owner/app', { token: 'test', fetcher: async () => { requests++; return { ok: false, status: 403 }; } });
+  const api = github('owner/app', { token: 'test',
+    /** Count denied requests so permission failures cannot masquerade as empty history or trigger retries. */
+    fetcher: async () => { requests++; return { ok: false, status: 403 }; }
+  });
   await assert.rejects(api.api('POST', 'deployments', {}), /403/); assert.equal(requests, 1);
   await assert.rejects(api.pages('deployments'), /403/); assert.equal(requests, 2);
 });
 
 test('pagination reads beyond the first page and evidence conflicts are errors', async () => {
-  const api = github('owner/app', { token: 'test', fetcher: async (url, options) => {
-    if (options.method === 'POST') return { ok: false, status: 422 };
-    return { ok: true, status: 200, json: async () => url.endsWith('page=1') ? Array(100).fill({}) : [{ id: 101 }] };
-  } });
+  const api = github('owner/app', { token: 'test',
+    /** Supply two history pages and reject evidence writes to exercise immutable asset conflicts. */
+    fetcher: async (url, options) => {
+      if (options.method === 'POST') return { ok: false, status: 422 };
+      return { ok: true, status: 200,
+        /** Fill the first page so the client must fetch the final record from the second. */
+        json: async () => url.endsWith('page=1') ? Array(100).fill({}) : [{ id: 101 }]
+      };
+    }
+  });
   assert.equal((await api.pages('deployments')).length, 101);
   await assert.rejects(api.evidence(1, 'plan.json', {}), /422/);
 });

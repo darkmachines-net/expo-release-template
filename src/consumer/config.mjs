@@ -1,8 +1,8 @@
 /** @file Validate the small configuration contract; EAS remains authoritative for build/submit profiles. */
 import Ajv from 'ajv';
-import { readJson, within, sourceEnvironment, hash } from './io.mjs';
-import { assert } from './engine.mjs';
-const validate = new Ajv({ allErrors: true }).compile(readJson(new URL('../schemas/release.config.schema.json', import.meta.url)));
+import { readJson, within, sourceEnvironment, hash } from '../io.mjs';
+import { assert } from '../engine.mjs';
+const validate = new Ajv({ allErrors: true }).compile(readJson(new URL('../../schemas/release.config.schema.json', import.meta.url)));
 
 /** Load only JSON, rejecting unsupported legacy contracts before any source or provider operation. */
 export function loadConfig(root = process.cwd()) {

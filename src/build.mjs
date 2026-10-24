@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import { assert } from './engine.mjs';
 import { run, within, sourceEnvironment, seal } from './io.mjs';
-import { hook } from './source.mjs';
+import { hook } from './consumer/source.mjs';
 
 /** Build a multi-platform OCI archive without registry authentication, then smoke-test its amd64 image. */
 export async function buildServer(root, plan, directory, execute = run) {
@@ -21,6 +21,7 @@ export async function buildServer(root, plan, directory, execute = run) {
 /** Run configured disposable dependencies and application assertions without deployment credentials. */
 export async function smoke(root, plan, archive, execute = run, fetcher = fetch) {
   const id = `release-${randomUUID()}`, image = `${id}:smoke`, containers = [];
+  /** Run Docker with the source-only environment, allowing a test executor to inspect each call. */
   const command = (args, options = {}) => execute('docker', args, { env: sourceEnvironment(), ...options });
   const spec = plan.config.server.smoke;
   try {
@@ -51,7 +52,14 @@ export async function smoke(root, plan, archive, execute = run, fetcher = fetch)
   }
 }
 
-/** Compile a prepared command build using only Android signing inputs, then seal each verified bundle. */
+/**
+ * Compile a prepared command build using only Android signing inputs, then seal each verified bundle.
+ * Decode ANDROID_KEYSTORE_BASE64 into a private temporary key, removed even on failure.
+ * Only the build hook receives ANDROID_KEYSTORE, ANDROID_STORE_PASSWORD,
+ * ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD; verification uses the source-only environment.
+ * The hook returns target IDs and writes directory/<target.id>/native.aab for submission;
+ * additional artifacts such as native.apk are governed by the consumer's verify hook.
+ */
 export function commandBuild(root, plan, directory, environment = process.env) {
   const keyFile = path.resolve(directory, 'upload.keystore');
   fs.mkdirSync(directory, { recursive: true });

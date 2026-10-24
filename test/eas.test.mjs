@@ -23,6 +23,7 @@ test('public build record proves project, application, source, profile and runti
 
 test('cloud build starts once then reads its exact provider ID', async () => {
   const value = plan(), calls = [];
+  /** Simulate acceptance followed by a finished build, retaining argv for duplicate-request assertions. */
   const command = (args, cwd, options) => { calls.push({ args, cwd, options }); return args[0] === 'build' ? [{ id: 'provider-id' }] : build(value); };
   const result = await cloudBuild('source', value, value.config.mobile.targets[0], command);
   assert.equal(result.id, 'provider-id'); assert.equal(calls.length, 2);
@@ -71,11 +72,14 @@ test('hidden secrets, files, undeclared input and profile overrides fail before 
 });
 
 test('ordinary command gets Expo credentials only and build uses real Git identity', () => {
-  eas(['build:view', 'id', '--json'], 'inert', { environment: { EAS_NO_VCS: '0' }, execute: (binary, args, options) => {
-    assert.equal(binary, 'eas'); assert.equal(options.env.EAS_NO_VCS, undefined);
-    for (const key of ['GITHUB_TOKEN', 'DEPLOY_TOKEN', 'ANDROID_STORE_PASSWORD']) assert.equal(options.env[key], undefined);
-    return '{"id":"id"}';
-  } });
+  eas(['build:view', 'id', '--json'], 'inert', { environment: { EAS_NO_VCS: '0' },
+    /** Inspect the real CLI environment boundary without invoking EAS. */
+    execute: (binary, args, options) => {
+      assert.equal(binary, 'eas'); assert.equal(options.env.EAS_NO_VCS, undefined);
+      for (const key of ['GITHUB_TOKEN', 'DEPLOY_TOKEN', 'ANDROID_STORE_PASSWORD']) assert.equal(options.env[key], undefined);
+      return '{"id":"id"}';
+    }
+  });
 });
 
 test('managed counters must be initialized above verified platform floors before reserving', () => {

@@ -7,6 +7,7 @@ import { assert } from './engine.mjs';
 
 /** Hash canonical JSON or bytes for deterministic identities. */
 export function hash(value) {
+  /** Sort object keys recursively while preserving array order before hashing JSON. */
   const stable = v => Array.isArray(v) ? v.map(stable) : v && typeof v === 'object'
     ? Object.fromEntries(Object.keys(v).sort().map(k => [k, stable(v[k])])) : v;
   return createHash('sha256').update(Buffer.isBuffer(value) ? value : JSON.stringify(stable(value))).digest('hex');
@@ -68,13 +69,17 @@ export function trackedIdentity(root, ref, { include = () => true, content = () 
 
 /** Match configured directory/file prefixes, excluding only documented non-production files. */
 export function inputIdentity(root, ref, inputs) {
-  return trackedIdentity(root, ref, { include: file => inputs.some(p => p === '.' || file === p || file.startsWith(`${p}/`))
-    && !/(^|\/)(node_modules|docs|__tests__|__mocks__|test|tests)(\/|$)|\.(test|spec)\.|\.md$/.test(file) });
+  return trackedIdentity(root, ref, {
+    /** Include configured production paths while omitting documentation, tests and installed dependencies. */
+    include: file => inputs.some(p => p === '.' || file === p || file.startsWith(`${p}/`))
+      && !/(^|\/)(node_modules|docs|__tests__|__mocks__|test|tests)(\/|$)|\.(test|spec)\.|\.md$/.test(file)
+  });
 }
 
 /** Hash every regular artifact file; reject links so publishers cannot read outside an artifact. */
 export function inventory(directory) {
   const files = {};
+  /** Walk sorted relative paths, rejecting links and non-regular entries before reading their bytes. */
   const visit = prefix => {
     for (const entry of fs.readdirSync(path.join(directory, prefix), { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const relative = path.posix.join(prefix, entry.name);

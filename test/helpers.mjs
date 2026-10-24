@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { configured } from '../src/config.mjs';
+import { configured } from '../src/consumer/config.mjs';
 import { selectRelease } from '../src/engine.mjs';
 
 /** Return an ordinary two-platform Expo application with an optional server. */
@@ -51,6 +51,7 @@ export function temporary(t) {
 /** Create a disposable Git repository suitable for binary/deletion and build-commit tests. */
 export function repository(t) {
   const root = temporary(t);
+  /** Run Git in this disposable checkout and return trimmed stdout. */
   const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true }).trim();
   git(['init', '-q']); git(['config', 'user.name', 'Test']); git(['config', 'user.email', 'test@example.invalid']);
   return { root, git,

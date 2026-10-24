@@ -5,8 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { trackedIdentity, inputIdentity, sourceEnvironment, seal, verify, inventory, hash, within, writeJson } from '../src/io.mjs';
 import { hostedIdentity } from '../src/worker.mjs';
-import { verifyPlan, verifyPins, loadConfig } from '../src/config.mjs';
-import { fingerprintTransform, runtimeVersion } from '../src/expo.cjs';
+import { verifyPlan, verifyPins, loadConfig } from '../src/consumer/config.mjs';
+import { fingerprintTransform, runtimeVersion } from '../src/consumer/expo.cjs';
 import { repository, temporary, config, plan } from './helpers.mjs';
 
 test('tracked inputs detect binary changes, deleted paths and file renames', t => {
@@ -36,7 +36,12 @@ test('shared packages and lockfile bytes participate in configured input sets', 
 
 test('normalizers exclude allocated metadata while retaining actual configuration', t => {
   const repo = repository(t); repo.save('version.json', '{"version":"1.0.0","host":"one"}'); repo.commit();
-  const options = { content: () => 'text', normalize: (_, text) => { const value = JSON.parse(text); delete value.version; return JSON.stringify(value); } };
+  const options = {
+    /** Read fixture blobs as text so metadata normalization participates in identity. */
+    content: () => 'text',
+    /** Omit only the allocated version; retain the host to detect real configuration changes. */
+    normalize: (_, text) => { const value = JSON.parse(text); delete value.version; return JSON.stringify(value); }
+  };
   const before = trackedIdentity(repo.root, 'HEAD', options);
   repo.save('version.json', '{"version":"1.1.0","host":"one"}'); repo.commit();
   assert.equal(trackedIdentity(repo.root, 'HEAD', options), before);

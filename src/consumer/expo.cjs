@@ -1,4 +1,4 @@
-/** @file Small Expo helpers for major-only runtime labels and allocation-free native fingerprints. */
+/** @file Public Expo configuration helpers for major-only runtimes and allocation-free fingerprints. */
 
 /** Derive an OTA runtime from the major of a stable mobile release version. */
 function runtimeVersion(version) {

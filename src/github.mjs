@@ -6,11 +6,13 @@ const prefix = 'expo-release/v3/';
 export function github(repository, { token = process.env.GITHUB_TOKEN, fetcher = fetch } = {}) {
   const base = `https://api.github.com/repos/${repository}`;
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+  /** Send one repository-relative API request; return parsed JSON or null for HTTP 204. Never retry writes. */
   const api = async (method, route, body) => {
     const response = await fetcher(`${base}/${route}`, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
     assert(response.ok, `GitHub ${method} ${route.split('?')[0]} failed (${response.status}); do not repeat an uncertain write.`);
     return response.status === 204 ? null : response.json();
   };
+  /** Collect a repository-relative list endpoint in API order; reject malformed or unbounded history. */
   const pages = async route => {
     const values = [];
     for (let page = 1; page <= 1000; page++) {

@@ -11,7 +11,7 @@
   "exports": {
     ".": "./src/index.mjs",
     "./engine": "./src/engine.mjs",
-    "./expo": "./src/expo.cjs",
+    "./expo": "./src/consumer/expo.cjs",
     "./package.json": "./package.json",
     "./schemas/*": "./schemas/*"
   },
@@ -24,10 +24,13 @@
     "ajv": "8.20.0"
   },
   "devDependencies": {
+    "eslint": "10.13.0",
+    "eslint-plugin-jsdoc": "62.9.0",
     "yaml": "2.9.0"
   },
   "scripts": {
+    "lint": "eslint . --max-warnings=0",
     "test": "node --test test/*.test.mjs",
-    "check": "npm test"
+    "check": "npm run lint && npm test"
   }
 }
