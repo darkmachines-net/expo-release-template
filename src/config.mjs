@@ -35,7 +35,7 @@ export function verifyPins(root, sha) {
   assert(/^[a-f0-9]{40}$/.test(sha), 'Toolkit must be pinned to a full commit SHA.');
   const packageJson = readJson(within(root, 'package.json'));
   const dependency = packageJson.devDependencies?.['@mchartier/expo-release'] ?? packageJson.dependencies?.['@mchartier/expo-release'];
-  assert(dependency === `git+https://github.com/MChartier/expo-release-template.git#${sha}`, 'Package/workflow toolkit pins differ.');
+  assert(dependency === `git+https://github.com/darkmachines-net/expo-release-template.git#${sha}`, 'Package/workflow toolkit pins differ.');
   const lock = readJson(within(root, 'package-lock.json'));
   assert(lock.packages?.['node_modules/@mchartier/expo-release']?.resolved?.endsWith(`#${sha}`), 'Regenerate the consumer dependency lock normally.');
 }

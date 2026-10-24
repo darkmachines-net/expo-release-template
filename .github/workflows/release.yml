@@ -31,7 +31,7 @@ jobs:
       builder: ${{ steps.context.outputs.builder }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with: &toolkit { repository: MChartier/expo-release-template, ref: '${{ job.workflow_sha }}', path: .toolkit, persist-credentials: false }
+        with: &toolkit { repository: darkmachines-net/expo-release-template, ref: '${{ job.workflow_sha }}', path: .toolkit, persist-credentials: false }
       - uses: ./.toolkit/.github/actions/setup
       - id: context
         run: node .toolkit/bin/worker.mjs context

@@ -119,10 +119,12 @@ test('artifact plans cannot change configured producer or destination', () => {
 
 test('package and lock must use the workflow full SHA', t => {
   const root = temporary(t), sha = 'c'.repeat(40);
-  writeJson(path.join(root, 'package.json'), { devDependencies: { '@mchartier/expo-release': `git+https://github.com/MChartier/expo-release-template.git#${sha}` } });
-  writeJson(path.join(root, 'package-lock.json'), { packages: { 'node_modules/@mchartier/expo-release': { resolved: `git+ssh://git@github.com/MChartier/expo-release-template.git#${sha}` } } });
+  writeJson(path.join(root, 'package.json'), { devDependencies: { '@mchartier/expo-release': `git+https://github.com/darkmachines-net/expo-release-template.git#${sha}` } });
+  writeJson(path.join(root, 'package-lock.json'), { packages: { 'node_modules/@mchartier/expo-release': { resolved: `git+ssh://git@github.com/darkmachines-net/expo-release-template.git#${sha}` } } });
   verifyPins(root, sha); assert.throws(() => verifyPins(root, 'main'), /full commit/);
   assert.throws(() => verifyPins(root, 'd'.repeat(40)), /pins differ/);
+  writeJson(path.join(root, 'package.json'), { devDependencies: { '@mchartier/expo-release': `git+https://github.com/other/expo-release-template.git#${sha}` } });
+  assert.throws(() => verifyPins(root, sha), /pins differ/);
 });
 
 test('configuration rejects legacy graph fields and unsafe paths', t => {

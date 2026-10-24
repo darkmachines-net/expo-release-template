@@ -15,6 +15,11 @@ test('the single reusable release workflow has fixed jobs and repository seriali
   assert.deepEqual(Object.keys(workflow.on.workflow_call.inputs), ['profile', 'rebuild']);
   for (const name of ['prepare', 'reserve', 'server-build', 'server-publish', 'server-deploy', 'native-start', 'native-build', 'native-record', 'native-submit', 'ota-export', 'ota-publish']) assert.ok(jobs[name]);
   assert.ok(!JSON.stringify(workflow).includes('workflow_run'));
+  for (const job of Object.values(jobs)) {
+    const checkout = job.steps.find(step => step.with?.path === '.toolkit');
+    assert.equal(checkout.with.repository, 'darkmachines-net/expo-release-template');
+    assert.equal(checkout.with.ref, '${{ job.workflow_sha }}');
+  }
 });
 
 test('reservation precedes every build and external operation', () => {
