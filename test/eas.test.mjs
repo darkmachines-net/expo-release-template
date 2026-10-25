@@ -1,4 +1,4 @@
-/** @file Supported EAS CLI contracts, destination identity and exact exported bundle publication. */
+/** @file EAS CLI contracts, isolated monorepo build status reads, destination identity and exact OTA publication. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -21,24 +21,38 @@ test('public build record proves project, application, source, profile and runti
   for (const [key, field] of Object.entries(changes)) assert.throws(() => verifyBuild({ ...build(), [key]: field }, value, target), /identity/);
 });
 
-test('cloud build starts once then reads its exact provider ID', async () => {
-  const value = plan(), calls = [];
-  /** Simulate acceptance followed by a finished build, retaining argv for duplicate-request assertions. */
-  const command = (args, cwd, options) => { calls.push({ args, cwd, options }); return args[0] === 'build' ? [{ id: 'provider-id' }] : build(value); };
-  const result = await cloudBuild('source', value, value.config.mobile.targets[0], command);
-  assert.equal(result.id, 'provider-id'); assert.equal(calls.length, 2);
-  assert.ok(calls[0].args.includes('--no-wait')); assert.ok(calls[0].args.includes('--freeze-credentials'));
-  assert.ok(!calls[0].args.includes('--auto-submit')); assert.deepEqual(calls[1].args, ['build:view', 'provider-id', '--json']);
+test('cloud build starts in the app directory and reads its exact ID through an inert project', async t => {
+  const source = temporary(t);
+  for (const directory of ['.', 'apps/mobile']) {
+    const value = plan(), calls = []; value.config.mobile.directory = directory;
+    /** Require EAS project configuration on reads without permitting application code evaluation. */
+    const command = (args, cwd, options) => {
+      calls.push({ args, cwd, options });
+      if (args[0] === 'build') return [{ id: 'provider-id' }];
+      assert.notEqual(cwd, source); assert.notEqual(cwd, path.join(source, directory));
+      assert.equal(readJson(path.join(cwd, 'app.json')).expo.extra.eas.projectId, value.config.mobile.projectId);
+      assert.equal(fs.existsSync(path.join(cwd, 'app.config.js')), false);
+      return build(value);
+    };
+    const result = await cloudBuild(source, value, value.config.mobile.targets[0], command);
+    assert.equal(result.id, 'provider-id'); assert.equal(calls.length, 2);
+    assert.equal(calls[0].cwd, path.join(source, directory)); assert.equal(calls[0].options.environment.EAS_NO_VCS, '0');
+    assert.ok(calls[0].args.includes('--no-wait')); assert.ok(calls[0].args.includes('--freeze-credentials'));
+    assert.ok(!calls[0].args.includes('--auto-submit')); assert.deepEqual(calls[1].args, ['build:view', 'provider-id', '--json']);
+    assert.equal(fs.existsSync(calls[1].cwd), false);
+  }
 });
 
 test('lost build acknowledgement or failed build does not enqueue again', async () => {
-  for (const failure of ['lost', 'empty', 'failed']) {
-    let starts = 0;
-    await assert.rejects(cloudBuild('source', plan(), config().mobile.targets[0], args => {
+  for (const failure of ['lost', 'empty', 'failed', 'read']) {
+    let starts = 0, reader;
+    await assert.rejects(cloudBuild('source', plan(), config().mobile.targets[0], (args, cwd) => {
       if (args[0] === 'build') { starts++; if (failure === 'lost') throw new Error('lost acknowledgement'); return failure === 'empty' ? [] : [{ id: 'id' }]; }
+      reader = cwd; if (failure === 'read') throw new Error('status read unavailable');
       return { status: 'ERRORED' };
     }));
     assert.equal(starts, 1);
+    if (reader) assert.equal(fs.existsSync(reader), false);
   }
 });
 

@@ -1,4 +1,4 @@
-/** @file Independent paths, conservative runtimes and monotonic version reservations. */
+/** @file Independent selection and monotonic versions from successful baselines, including fresh releases after failures. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { selectRelease, increment, nextPair, compareVersions, assertCompatible } from '../src/engine.mjs';
@@ -80,18 +80,17 @@ test('failed first binary release retries with consumed major and new minor', ()
 });
 
 test('native build success establishes compatibility without store completion', () => {
-  const previous = history(); previous.pending.push('production/submit/ios');
+  const previous = history();
   const input = observation(); input.js.ios = 'new';
   const result = selectRelease(config(), 'production', input, previous);
   assert.deepEqual(result.ota, ['ios']); assert.equal(result.native, false);
 });
 
-test('unknown outcome blocks a new request for the affected target', () => {
-  const previous = history(); previous.pending.push('production/ota/android');
-  const input = observation(); input.js.android = 'new';
-  assert.throws(() => selectRelease(config(), 'production', input, previous), /Resolve uncertain/);
-  input.js.android = 'js-A'; input.server = 'new-server';
-  assert.equal(selectRelease(config(), 'production', input, previous).server, true);
+test('unconfirmed delivery remains selected even with no further source changes', () => {
+  const previous = history(); delete previous.baselines['production/js/android'];
+  const result = selectRelease(config(), 'production', observation(), previous);
+  assert.deepEqual(result.ota, ['android']); assert.equal(result.versions.mobile, '1.0.1');
+  assert.equal(result.server, false); assert.equal(result.native, false);
 });
 
 test('profiles get independent success baselines without separate semantic versions', () => {
@@ -100,12 +99,6 @@ test('profiles get independent success baselines without separate semantic versi
   const result = selectRelease(value, 'internal', input, history());
   assert.equal(result.versions.mobile, '1.1.0'); assert.equal(result.runtime, '1');
   assert.ok(!result.operations.some(key => key.includes('/submit/')));
-});
-
-test('changing profile cannot bypass an unresolved request for the same operation and target', () => {
-  const previous = history(); previous.pending.push('internal/publish/server');
-  const input = observation(); input.server = 'new-server';
-  assert.throws(() => selectRelease(config(), 'production', input, previous), /internal\/publish\/server/);
 });
 
 test('Calibrate reserves odd/even numbers above seeded and failed reservations', () => {

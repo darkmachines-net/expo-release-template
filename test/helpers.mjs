@@ -1,4 +1,4 @@
-/** @file Current-format deterministic fixtures; no real provider credentials or release operations. */
+/** @file Current-format reservations and successful-baseline fixtures without provider credentials or release operations. */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,9 +22,9 @@ export function observation() {
     fingerprints: { production: { android: 'a'.repeat(40), ios: 'b'.repeat(40) } } };
 }
 
-/** A successful native release establishes current-runtime baselines for both platforms. */
+/** Return a successful native release's current-runtime baselines without any historical failure gate. */
 export function history() {
-  const value = { mobile: { version: '1.0.0', family: 'family-A' }, server: { version: '1.2.4' }, baselines: {}, pending: [] };
+  const value = { mobile: { version: '1.0.0', family: 'family-A' }, server: { version: '1.2.4' }, baselines: {} };
   value.baselines['production/deploy/server'] = { input: 'server-A' };
   for (const platform of ['android', 'ios']) {
     value.baselines[`production/build/${platform}`] = { runtime: '1', fingerprint: observation().fingerprints.production[platform] };

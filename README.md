@@ -29,7 +29,7 @@ There is one mobile semantic version across platforms. Expo runtime is an explic
 
 The server has an independent patch version. Git input sets retain binary changes, deletions, lockfiles and shared packages. Baselines belong to each successful target, independent of the overall workflow conclusion. Native compatibility belongs to successful builds, independently of store submission status. Calibrate additionally deploys its diagnostic server metadata when producing a new native version.
 
-The workflow stamps a detached child commit of the selected source and reserves annotated tags under `expo-release/v3/`. Failed reservations consume their versions. It never changes the default branch or opens a version PR. Calibrate's one exception reserves an odd phone/even watch build-number pair above all prior reservations and the verified seed floor.
+The workflow stamps a detached child commit of the selected source and reserves annotated tags under `expo-release/v3/`. Failed reservations consume their versions. Failed or interrupted operations do not block a fresh dispatch or require manual cleanup; only confirmed successes advance baselines. A lost provider acknowledgement can therefore cause redundant work in a later release. The workflow never changes the default branch or opens a version PR. Calibrate's one exception reserves an odd phone/even watch build-number pair above all prior reservations and the verified seed floor.
 
 ## Execution and trust
 
@@ -45,4 +45,4 @@ Signing, publication and deployment use separate jobs. Privileged publishers use
 
 Run `npm run check` for documentation lint plus selection, reservations, preparation, trust boundaries, provider contracts, workflow ordering and installation checks. `npm run lint` checks file overviews and JSDoc descriptions on named functions/methods, including public APIs; `npm test` runs the behavioral suite. Tests never dispatch a live release. Keep authored shared implementation plus consumer integration below 3,000 physical lines; report tests, documentation, generated locks and existing application build tools separately.
 
-Keep documentation with the code it describes, in file/function comments or the owning module's README. Update it with behavior changes and link to its owner rather than duplicating contracts. See [workflow operations](.github/workflows/README.md#immutable-evidence-and-interrupted-operations) for current history and interrupted-operation handling.
+Keep documentation with the code it describes, in file/function comments or the owning module's README. Update it with behavior changes and link to its owner rather than duplicating contracts. See [workflow operations](.github/workflows/README.md#immutable-evidence-and-fresh-releases-after-failure) for current history and fresh-release behavior.

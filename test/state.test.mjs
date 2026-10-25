@@ -1,8 +1,9 @@
-/** @file Durable reservations and target-specific success; uncertain requests never authorize retries. */
+/** @file Fresh releases survive prior failures while reservations, successful baselines and same-run duplicate guards remain intact. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { github, historyFrom, reserve, begin, complete, operationPayload, loadHistory } from '../src/github.mjs';
-import { plan } from './helpers.mjs';
+import { selectRelease } from '../src/engine.mjs';
+import { plan, observation } from './helpers.mjs';
 
 /** Deterministic GitHub API stand-in which records ordering without networking. */
 function client({ deployments = [], states = {}, failAt } = {}) {
@@ -51,7 +52,7 @@ test('known reservations consume failures independently of success baselines', (
   const successful = operationPayload(value, 'build/android');
   const result = historyFrom(records, [{ payload: { ...successful, key: 'production/submit/android' }, state: 'pending' }, { payload: successful, state: 'success' }]);
   assert.equal(result.mobile.version, '1.3.0'); assert.equal(result.mobile.pairCodeFloor, 6);
-  assert.deepEqual(result.pending, ['production/submit/android']);
+  assert.equal(result.baselines['production/submit/android'], undefined);
   assert.equal(result.baselines['production/build/android'].runtime, '1');
   assert.equal(result.baselines['production/js/android'].input, 'js-A');
 });
@@ -65,7 +66,6 @@ test('server failure cannot erase a successful mobile baseline or vice versa', (
   ]);
   assert.equal(result.baselines['production/deploy/server'].input, 'old-server');
   assert.equal(result.baselines['production/js/android'].input, 'js-A');
-  assert.deepEqual(result.pending, []);
 });
 
 test('OTA reservations cannot erase earlier paired build-number reservations in either history order', () => {
@@ -89,11 +89,10 @@ test('latest successful native embedded bundle supersedes an earlier OTA baselin
   assert.equal(result.baselines['production/js/android'].input, 'reverted-js');
 });
 
-test('unknown, missing, error, and inactive status all remain outstanding', () => {
-  for (const state of [undefined, 'pending', 'in_progress', 'queued', 'error', 'inactive']) {
+test('unconfirmed outcomes never advance a successful baseline', () => {
+  for (const state of [undefined, 'pending', 'in_progress', 'queued', 'failure', 'error', 'inactive']) {
     const result = historyFrom([], [{ payload: operationPayload(plan(), 'ota/ios'), state }]);
-    assert.deepEqual(result.pending, ['production/ota/ios']);
-    assert.deepEqual(result.baselines, {});
+    assert.deepEqual(result, { baselines: {} });
   }
 });
 
@@ -106,22 +105,22 @@ test('intent is saved before the caller may invoke its provider', async () => {
   assert.equal(fake.calls.at(-1)[2].auto_merge, false);
 });
 
-test('an outstanding request prevents creation of another intent', async () => {
-  for (const state of [undefined, 'pending', 'in_progress', 'error', 'inactive']) {
-    const fake = client({ deployments: [{ id: 9, payload: { key: 'production/ota/android', run: 'older' } }], states: { 9: state } });
-    await assert.rejects(begin(fake, plan(), 'ota/android'), /unresolved/);
-    assert.equal(fake.calls.filter(call => call[0] === 'POST').length, 0);
+test('every prior outcome permits a fresh operation without inspecting or rewriting the old status', async () => {
+  for (const operation of ['publish/server', 'deploy/server', 'build/android', 'submit/ios', 'ota/android']) {
+    for (const state of [undefined, 'pending', 'in_progress', 'queued', 'failure', 'error', 'inactive', 'success']) {
+      const fake = client({ deployments: [{ id: 9, payload: { key: `production/${operation}`, run: 'older' } }], states: { 9: state } });
+      assert.equal(await begin(fake, plan(), operation), 42);
+      assert.deepEqual(fake.calls.map(call => call.slice(0, 2)), [['pages', 'deployments?task=expo-release-v3'], ['POST', 'deployments']]);
+    }
   }
 });
 
-test('same-run duplicate is rejected even after completed success', async () => {
-  const fake = client({ deployments: [{ id: 9, payload: { key: 'production/ota/android', run: '123' } }], states: { 9: 'success' } });
-  await assert.rejects(begin(fake, plan(), 'ota/android'), /already attempted/);
-});
-
-test('operator-confirmed failure allows a new run, not an implicit automatic retry', async () => {
-  const fake = client({ deployments: [{ id: 9, payload: { key: 'production/ota/android', run: 'older' } }], states: { 9: 'failure' } });
-  assert.equal(await begin(fake, plan(), 'ota/android'), 42);
+test('same-run duplicate is rejected for every outcome, including a missing acknowledgement', async () => {
+  for (const state of [undefined, 'pending', 'in_progress', 'queued', 'failure', 'error', 'inactive', 'success']) {
+    const fake = client({ deployments: [{ id: 9, payload: { key: 'production/ota/android', run: '123' } }], states: { 9: state } });
+    await assert.rejects(begin(fake, plan(), 'ota/android'), /already attempted in this run/);
+    assert.equal(fake.calls.filter(call => call[0] === 'POST').length, 0);
+  }
 });
 
 test('immutable evidence precedes success and failure leaves the intent outstanding', async () => {
@@ -136,10 +135,45 @@ test('immutable evidence precedes success and failure leaves the intent outstand
   assert.ok(!failed.calls.some(call => call[0] === 'POST'));
 });
 
-test('intent check blocks the same target across profiles while allowing unrelated operations', async () => {
+test('old profile attempts do not block a fresh run but a same-run profile change cannot duplicate an operation', async () => {
   const fake = client({ deployments: [{ id: 9, payload: { key: 'internal/publish/server', run: 'older' } }] });
-  await assert.rejects(begin(fake, plan(), 'publish/server'), /unresolved/);
+  assert.equal(await begin(fake, plan(), 'publish/server'), 42);
   assert.equal(await begin(fake, plan(), 'ota/android'), 42);
+  await assert.rejects(begin(fake, plan({ run: 'older' }), 'publish/server'), /already attempted in this run/);
+});
+
+test('partial failures consume reservations while fresh mixed releases use only confirmed target baselines', async () => {
+  for (const state of [undefined, 'failure', 'pending', 'in_progress', 'queued', 'error', 'inactive']) {
+    const old = plan(), input = observation(); input.server = 'server-B'; input.js.android = 'js-B';
+    const reservation = { format: 3, source: old.source, run: old.run, versions: { server: '1.2.9', mobile: '1.0.8' }, family: input.family, pairCodeFloor: 24 };
+    const failed = ['publish/server', 'deploy/server', 'build/android', 'submit/ios', 'ota/android'].map(operation => ({
+      id: 9, payload: { ...operationPayload(old, operation), input: 'unconfirmed', bundleInput: 'unconfirmed' }, state
+    }));
+    const successful = ['deploy/server', 'build/android', 'build/ios'].map(operation => ({ payload: operationPayload(old, operation), state: 'success' }));
+    const history = historyFrom([reservation], [...failed, ...successful]);
+    const selection = selectRelease(old.config, old.profile, input, history);
+    assert.deepEqual(selection.versions, { server: '1.2.10', mobile: '1.0.9' });
+    assert.equal(selection.server, true); assert.equal(selection.native, false); assert.deepEqual(selection.ota, ['android']);
+    assert.equal(history.baselines['production/deploy/server'].input, 'server-A');
+    assert.equal(history.baselines['production/js/android'].input, 'js-A');
+    assert.equal(history.mobile.pairCodeFloor, 24);
+    const fake = client({ deployments: failed, states: { 9: state } });
+    const next = { ...old, ...selection, run: '124' };
+    assert.equal(await begin(fake, next, 'publish/server'), 42);
+    assert.equal(await begin(fake, next, 'ota/android'), 42);
+    assert.ok(fake.calls.filter(call => call[0] === 'POST').every(call => call[2].payload.run === '124'));
+  }
+});
+
+test('an interrupted native cutover can rebuild with new versions and paired codes without inventing compatibility', () => {
+  const old = plan(); old.config.mobile.pairCodeFloor = 12;
+  const history = historyFrom([{ format: 3, source: old.source, run: old.run, versions: old.versions, family: old.observation.family, pairCodeFloor: 14 }], [
+    { payload: operationPayload(old, 'build/android'), state: 'pending' },
+    { payload: operationPayload(old, 'deploy/server'), state: 'success' }
+  ]);
+  const result = selectRelease(old.config, old.profile, old.observation, history);
+  assert.equal(result.native, true); assert.deepEqual(result.ota, []); assert.equal(result.runtime, '1');
+  assert.equal(result.versions.mobile, '1.1.0'); assert.deepEqual(result.pair, [15, 16]); assert.equal(result.server, false);
 });
 
 test('legacy records cannot become current baselines or reservations', () => {

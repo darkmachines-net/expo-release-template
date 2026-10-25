@@ -1,4 +1,4 @@
-/** @file Single-attempt WireGuard webhook deployment with bounded health confirmation and tunnel cleanup. */
+/** @file Single-attempt WireGuard deployment with bounded health confirmation and cleanup; failures do not block future runs. */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -38,7 +38,7 @@ export function verifyDeploymentResponse(output, service) {
   return { service, healthy: true, evidence: 'webhook-health-response' };
 }
 
-/** POST once; callers retain an unresolved intent whenever acknowledgement is missing. */
+/** POST once per run; missing acknowledgement cannot advance the successful deployment baseline. */
 export function connectAndDeploy(spec, env = process.env, execute = run) {
   const value = deploymentInputs(spec, env), directory = fs.mkdtempSync(path.join(os.tmpdir(), 'expo-deploy-'));
   const key = path.join(directory, 'wireguard.key'), network = 'expo-release';
@@ -58,7 +58,7 @@ export function connectAndDeploy(spec, env = process.env, execute = run) {
       '--resolve', `${value.url.hostname}:${value.url.port || '443'}:${value.host}`, '--config', '-', '--url', value.url.href,
       '--write-out', '\n%{http_code}'], { input: `header = "Authorization: Bearer ${value.token}"\n`, timeout: 790000 });
     return verifyDeploymentResponse(response, spec.service);
-  } catch { throw new Error('Deployment failed or is uncertain. Inspect the service and resolve its GitHub deployment record before another request.'); }
+  } catch { throw new Error('Deployment failed or is uncertain; this run cannot confirm health. A fresh release may proceed.'); }
   finally {
     try { if (created) command('sudo', ['ip', 'link', 'delete', network]); }
     finally { fs.rmSync(directory, { recursive: true, force: true }); }
