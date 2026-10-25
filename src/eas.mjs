@@ -1,4 +1,4 @@
-/** @file Supported upstream EAS commands only; publishers use data-only temporary projects, never consumer scripts. */
+/** @file Single-attempt upstream EAS operations; inert publishers preserve identity without blocking future releases on failure. */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -85,7 +85,7 @@ export function verifyBuild(build, plan, target) {
 }
 
 /**
- * Enqueue exactly once and wait using public read commands; errors never start another build.
+ * Enqueue exactly once per run and wait using public read commands; errors do not retry within this run.
  * EAS Build evaluates the consumer's source configuration with EXPO_TOKEN for existing
  * EAS-managed credentials. This authenticated evaluation is the explicit exception to
  * source-only execution; privileged submit/update publishers instead use inert projects.
@@ -95,17 +95,17 @@ export async function cloudBuild(root, plan, target, command = eas) {
   const result = command(['build', '--platform', target.platform, '--profile', profile.easProfile, '--message', `release:${plan.run}:${target.id}`,
     '--non-interactive', '--freeze-credentials', '--no-wait', '--json'], path.join(root, plan.config.mobile.directory),
     { environment: { ...plan.environments[plan.profile], EAS_NO_VCS: '0' } });
-  assert(Array.isArray(result) && result.length === 1 && result[0].id, 'EAS build acceptance is uncertain; inspect the provider before continuing.');
+  assert(Array.isArray(result) && result.length === 1 && result[0].id, 'EAS build acceptance is uncertain; this run cannot confirm success.');
   const id = result[0].id;
   console.error(`EAS build ${id}`);
   let build = result[0];
   for (let attempt = 0; attempt < 480; attempt++) {
     build = command(['build:view', id, '--json'], root);
     if (build.status === 'FINISHED') return verifyBuild(build, plan, target);
-    assert(!['ERRORED', 'CANCELED'].includes(build.status), `EAS build ${id} ${build.status}; resolve the deployment record before a new release.`);
+    assert(!['ERRORED', 'CANCELED'].includes(build.status), `EAS build ${id} ${build.status}; a fresh release may proceed.`);
     await delay(15000);
   }
-  throw new Error(`EAS build ${id} is still pending; do not enqueue another request.`);
+  throw new Error(`EAS build ${id} is still pending; a fresh release may create a redundant build.`);
 }
 
 /** Extract the exact project's submission ID from the CLI's documented provider URL. */
@@ -113,7 +113,7 @@ export function submissionId(output, mobile) {
   const matches = [...String(output).matchAll(/https:\/\/expo\.dev\/accounts\/([^/\s]+)\/projects\/([^/\s]+)\/submissions\/([a-f0-9-]{36})/gi)]
     .filter(m => decodeURIComponent(m[1]) === mobile.owner && decodeURIComponent(m[2]) === mobile.slug);
   const ids = [...new Set(matches.map(m => m[3]))];
-  assert(ids.length === 1, 'Submission acknowledgement is uncertain; inspect EAS before another request.');
+  assert(ids.length === 1, 'Submission acknowledgement is uncertain; this run cannot confirm success.');
   return ids[0];
 }
 
@@ -142,7 +142,7 @@ export function update(plan, platform, directory, command = eas) {
     const result = command(['update', '--channel', profile.channel, '--environment', profile.environment, '--platform', platform,
       '--message', `release:${plan.run}:${plan.versions.mobile}`, '--input-dir', path.resolve(directory), '--skip-bundler', '--non-interactive', '--json'], root);
     assert(Array.isArray(result) && result.length === 1 && result[0].group && result[0].runtimeVersion === plan.runtime
-      && result[0].platform === platform, 'OTA acknowledgement differs; inspect EAS before another request.');
+      && result[0].platform === platform, 'OTA acknowledgement differs; this run cannot confirm success.');
     return result[0];
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }

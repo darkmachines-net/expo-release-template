@@ -1,4 +1,4 @@
-/** @file Dependency-free release selection and version arithmetic; no filesystem or provider access. */
+/** @file Dependency-free release selection from successful baselines and consumed versions, independent of prior failures. */
 
 /** Require a release invariant before returning a decision. */
 export function assert(condition, message) {
@@ -38,6 +38,7 @@ export function nextPair(floor) {
  * Select three fixed paths from successful target baselines and immutable reservations.
  * A repository has one mobile version; profiles retain their own delivery baselines.
  * Native compatibility follows the latest reserved family, not submission or workflow success.
+ * Failed or unacknowledged operations never prevent a fresh release from being selected.
  */
 export function selectRelease(config, profile, observation, history = {}, rebuild = false) {
   assert(config.profiles[profile], 'Unknown release profile.');
@@ -70,10 +71,6 @@ export function selectRelease(config, profile, observation, history = {}, rebuil
     ...(native ? config.mobile.targets.flatMap(t => [`build/${t.id}`, ...(config.profiles[profile].submit ? [`submit/${t.id}`] : [])]) : []),
     ...ota.map(platform => `ota/${platform}`),
   ].map(key => `${profile}/${key}`);
-  /** Remove the profile prefix so an uncertain request blocks the same operation across profiles. */
-  const operation = key => key.slice(key.indexOf('/') + 1);
-  const unresolved = (history.pending ?? []).filter(key => operations.some(selected => operation(selected) === operation(key)));
-  assert(!unresolved.length, `Resolve uncertain operations in GitHub/provider tools before continuing: ${unresolved.join(', ')}`);
   return {
     format: 3, profile, server, native, ota, bump, runtime, pair, operations,
     versions: { server: server ? increment(serverFloor, 'patch') : serverFloor ?? null, mobile: mobileVersion },

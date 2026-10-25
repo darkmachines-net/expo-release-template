@@ -1,4 +1,4 @@
-/** @file GitHub's native tags, deployments and release assets provide the small durable release record. */
+/** @file Immutable reservations and successful target baselines; operation attempts guard only against same-run duplicates. */
 import { assert, compareVersions } from './engine.mjs';
 const prefix = 'expo-release/v3/';
 
@@ -9,7 +9,7 @@ export function github(repository, { token = process.env.GITHUB_TOKEN, fetcher =
   /** Send one repository-relative API request; return parsed JSON or null for HTTP 204. Never retry writes. */
   const api = async (method, route, body) => {
     const response = await fetcher(`${base}/${route}`, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
-    assert(response.ok, `GitHub ${method} ${route.split('?')[0]} failed (${response.status}); do not repeat an uncertain write.`);
+    assert(response.ok, `GitHub ${method} ${route.split('?')[0]} failed (${response.status}); this run does not retry writes.`);
     return response.status === 204 ? null : response.json();
   };
   /** Collect a repository-relative list endpoint in API order; reject malformed or unbounded history. */
@@ -28,15 +28,15 @@ export function github(repository, { token = process.env.GITHUB_TOKEN, fetcher =
     async evidence(releaseId, name, value) {
       const response = await fetcher(`https://uploads.github.com/repos/${repository}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`,
         { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
-      assert(response.ok, `Cannot retain release evidence (${response.status}); resolve before retrying.`);
+      assert(response.ok, `Cannot retain release evidence (${response.status}); this run cannot confirm success.`);
       return response.json();
     },
   };
 }
 
-/** Reduce current-format records without making failed runs erase other targets' successes. */
+/** Reduce current-format reservations and confirmed successes; other outcomes neither advance baselines nor block fresh runs. */
 export function historyFrom(records, deployments) {
-  const history = { baselines: {}, pending: [] };
+  const history = { baselines: {} };
   const pairCodeFloor = Math.max(0, ...records.map(record => record.pairCodeFloor ?? 0));
   for (const record of records) {
     assert(record.format === 3 && record.source && record.run, 'Legacy or malformed release reservation.');
@@ -49,7 +49,6 @@ export function historyFrom(records, deployments) {
   // GitHub returns newest deployments first; never substitute a workflow conclusion for target status.
   for (const { payload, state } of deployments) {
     assert(payload?.format === 3 && typeof payload.key === 'string', 'Legacy or malformed deployment record.');
-    if (!['success', 'failure'].includes(state)) history.pending.push(payload.key);
     if (state !== 'success' || history.baselines[payload.key]) continue;
     history.baselines[payload.key] = payload;
     if (payload.bundleKey && !history.baselines[payload.bundleKey]) history.baselines[payload.bundleKey] = { ...payload, input: payload.bundleInput };
@@ -107,17 +106,15 @@ export function operationPayload(plan, operation) {
     destination: id === 'server' ? plan.config.server.image : target?.applicationId ?? plan.config.profiles[plan.profile].channel };
 }
 
-/** Record intent before calling a provider; any prior unresolved request requires operator resolution. */
+/** Record intent before calling a provider once per run/operation; prior runs never prevent a fresh request. */
 export async function begin(client, plan, operation) {
   const payload = operationPayload(plan, operation);
   const previous = await client.pages('deployments?task=expo-release-v3');
   for (const deployment of previous) {
+    if (deployment.payload?.run !== plan.run) continue;
     assert(typeof deployment.payload?.key === 'string', 'Malformed operation identity; resolve its evidence before continuing.');
-    if (!deployment.payload.key.endsWith(`/${operation}`)) continue;
-    const statuses = await client.api('GET', `deployments/${deployment.id}/statuses?per_page=1`);
-    const state = statuses[0]?.state ?? 'pending';
-    assert(['success', 'failure'].includes(state) && deployment.payload?.run !== plan.run,
-      `Operation ${payload.key} was already attempted or is unresolved. Inspect GitHub and the provider; automatic retry is disabled.`);
+    assert(!deployment.payload.key.endsWith(`/${operation}`),
+      `Operation ${payload.key} was already attempted in this run; start a fresh release instead of retrying this request.`);
   }
   const deployment = await client.api('POST', 'deployments', { ref: plan.build, task: 'expo-release-v3', auto_merge: false,
     required_contexts: [], environment: payload.key, production_environment: plan.config.profiles[plan.profile].environment === 'production', payload });
@@ -125,7 +122,7 @@ export async function begin(client, plan, operation) {
   return deployment.id;
 }
 
-/** Retain evidence before marking success; a missing acknowledgement remains unresolved. */
+/** Retain evidence before marking success; missing acknowledgement leaves the last successful baseline intact. */
 export async function complete(client, plan, operation, deploymentId, result) {
   const release = await client.api('GET', `releases/tags/${prefix}run/${plan.run}`);
   await client.evidence(release.id, `${operation.replaceAll('/', '-')}.json`, { ...operationPayload(plan, operation), deploymentId, result });
