@@ -1,4 +1,4 @@
-/** @file Official EAS operations; retries reconnect to accepted builds through isolated public status readers. */
+/** @file Official EAS operations; isolated public readers reconcile accepted builds and their store submissions. */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -8,11 +8,16 @@ import { assert } from './engine.mjs';
 import { run, readJson, writeJson, sourceEnvironment, verify } from './io.mjs';
 export const EAS_VERSION = '25.3.0';
 
-/** Run the pinned official CLI; authenticated source evaluation is limited to EAS Build itself. */
+/** Run the pinned CLI, preserving submission diagnostics; only EAS Build evaluates authenticated source. */
 export function eas(args, cwd, { json = true, environment = {}, execute = run } = {}) {
   const env = { ...sourceEnvironment(), EAS_NO_VCS: '1', EAS_PROJECT_ROOT: path.resolve(cwd), NO_COLOR: '1', ...environment, EXPO_TOKEN: process.env.EXPO_TOKEN };
   if (environment.EAS_NO_VCS === '0') { delete env.EAS_NO_VCS; delete env.EAS_PROJECT_ROOT; }
-  const result = execute('eas', args, { cwd, env });
+  let result;
+  try { result = execute('eas', args, { cwd, env }); }
+  catch (error) {
+    if (args[0] === 'submit' && error.stdout) console.error(String(error.stdout));
+    throw error;
+  }
   return json ? JSON.parse(result) : result;
 }
 
@@ -138,13 +143,48 @@ export function submissionId(output, mobile) {
   return ids[0];
 }
 
-/** Submit one exact build ID or current-run AAB and wait for EAS's final CLI result. */
-export function submit(plan, target, artifact, submitProfiles, command = eas) {
+/**
+ * Reconnect to an exact EAS build's matching store submission before enqueueing once.
+ * Pending submissions resume waiting; failed ones can be replaced on explicit retry.
+ * Current-run AAB uploads have no provider build identity and rely on saved GitHub receipts.
+ */
+export async function submit(plan, target, artifact, submitProfiles, command = eas, wait = delay) {
   const profile = target.submitProfile ?? plan.config.profiles[plan.profile].easProfile;
   const destination = submitProfiles[profile]?.[target.platform];
   assert(destination && (target.platform === 'android' ? destination.track : destination.ascAppId), 'Configure the exact EAS submission destination before release.');
   const root = publisher(plan.config, plan.profile, { target, submit: submitProfiles });
   try {
+    if (artifact.buildId) {
+      const matches = [];
+      /** Match the exact provider build and store destination, rejecting corrupt identity or unknown status. */
+      const matchesDestination = record => {
+        assert(record?.id && record.app?.id === plan.config.mobile.projectId && record.platform?.toLowerCase() === target.platform
+          && ['AWAITING_BUILD', 'IN_QUEUE', 'IN_PROGRESS', 'FINISHED', 'ERRORED', 'CANCELED'].includes(record.status), 'EAS submission identity or status differs.');
+        if (record.submittedBuild?.id !== artifact.buildId) return false;
+        verifyBuild(record.submittedBuild, plan, target);
+        return target.platform === 'ios' ? record.iosConfig?.ascAppIdentifier === String(destination.ascAppId)
+          : record.androidConfig?.track === destination.track && record.androidConfig?.releaseStatus === (destination.releaseStatus ?? 'completed').replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase()
+            && (record.androidConfig.rollout ?? null) === (destination.rollout ?? null);
+      };
+      for (let offset = 0; ; offset += 50) {
+        assert(offset < 1000, 'Too many EAS submissions to reconcile.');
+        const batch = command(['submit:list', '--platform', target.platform, '--limit', '50', '--offset', String(offset), '--non-interactive', '--json'], root);
+        assert(Array.isArray(batch), 'Malformed EAS submission list.');
+        matches.push(...batch.filter(matchesDestination));
+        if (batch.length < 50) break;
+      }
+      const accepted = matches.find(record => record.status === 'FINISHED') ?? matches.find(record => !['ERRORED', 'CANCELED'].includes(record.status));
+      if (accepted) {
+        for (let attempt = 0; attempt < 480; attempt++) {
+          const record = command(['submit:view', accepted.id, '--json'], root);
+          assert(record?.id === accepted.id && matchesDestination(record), 'EAS submission destination differs.');
+          if (record.status === 'FINISHED') return { id: record.id, destination, completed: true };
+          assert(!['ERRORED', 'CANCELED'].includes(record.status), `EAS submission ${record.id} ${record.status}: ${record.error?.message ?? 'retry the failed job to submit again.'}`);
+          await wait(15000);
+        }
+        throw new Error(`EAS submission ${accepted.id} is still pending; retry the failed job to resume waiting.`);
+      }
+    }
     const output = command(['submit', '--platform', target.platform, '--profile', profile,
       artifact.buildId ? '--id' : '--path', artifact.buildId ?? path.resolve(artifact.file), '--wait', '--non-interactive', '--no-auto-testflight-setup'], root, { json: false });
     return { id: submissionId(output, plan.config.mobile), destination, completed: true };

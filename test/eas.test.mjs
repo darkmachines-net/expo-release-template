@@ -1,4 +1,4 @@
-/** @file EAS CLI contracts, isolated monorepo build status reads, destination identity and exact OTA publication. */
+/** @file EAS contracts, isolated build/submission reconciliation, destination identity and exact OTA publication. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -149,9 +149,10 @@ test('managed counters must be initialized above verified platform floors before
   value.mobile.builder = 'command'; verifyBuildFloors(value, () => assert.fail('paired builds use immutable Git reservations'));
 });
 
-test('submit accepts only an exact current-run artifact or verified build ID and waits', () => {
+test('submit accepts only an exact current-run artifact or verified build ID and waits', async () => {
   const value = plan(), target = value.config.mobile.targets[0]; let calls = 0;
-  const result = submit(value, target, { buildId: 'exact-build-id' }, value.submitProfiles, (args, root, options) => {
+  const result = await submit(value, target, { buildId: 'exact-build-id' }, value.submitProfiles, (args, root, options) => {
+    if (args[0] === 'submit:list') return [];
     calls++; assert.ok(args.includes('--wait')); assert.ok(args.includes('--id')); assert.ok(args.includes('exact-build-id'));
     assert.ok(!args.includes('--latest')); assert.ok(!args.includes('--json')); assert.equal(options.json, false);
     assert.equal(readJson(path.join(root, 'eas.json')).submit.production.android.track, 'internal');
@@ -160,25 +161,104 @@ test('submit accepts only an exact current-run artifact or verified build ID and
   assert.equal(calls, 1); assert.equal(result.completed, true);
 });
 
-test('missing explicit destination or uncertain submission response cannot be treated as success', () => {
+test('missing explicit destination or uncertain submission response cannot be treated as success', async () => {
   const value = plan(); let calls = 0;
-  assert.throws(() => submit(value, value.config.mobile.targets[1], { buildId: 'id' }, { production: { ios: {} } }, () => { calls++; }), /destination/);
+  await assert.rejects(submit(value, value.config.mobile.targets[1], { buildId: 'id' }, { production: { ios: {} } }, () => { calls++; }), /destination/);
   assert.equal(calls, 0);
-  assert.throws(() => submit(value, value.config.mobile.targets[0], { file: 'native.aab' }, value.submitProfiles, () => { calls++; return 'accepted'; }), /uncertain/);
+  await assert.rejects(submit(value, value.config.mobile.targets[0], { file: 'native.aab' }, value.submitProfiles, () => { calls++; return 'accepted'; }), /uncertain/);
   assert.equal(calls, 1);
   assert.throws(() => submissionId('https://expo.dev/accounts/other/projects/app/submissions/12345678-1234-1234-1234-123456789012', value.config.mobile), /uncertain/);
 });
 
-test('Calibrate phone and watch destinations stay distinct in EAS submit profiles', () => {
+test('Calibrate phone and watch destinations stay distinct in EAS submit profiles', async () => {
   const value = plan(), profiles = { phone: { android: { track: 'internal' } }, wear: { android: { track: 'wear:internal' } } };
   for (const id of ['phone','wear']) {
     const target = { id, platform: 'android', applicationId: 'app.example.mobile', submitProfile: id };
-    submit(value, target, { file: `${id}.aab` }, profiles, (args, root) => {
+    await submit(value, target, { file: `${id}.aab` }, profiles, (args, root) => {
       assert.equal(args[args.indexOf('--profile')+1], id);
       assert.equal(readJson(path.join(root,'eas.json')).submit[id].android.track, profiles[id].android.track);
       return 'https://expo.dev/accounts/owner/projects/app/submissions/12345678-1234-1234-1234-123456789012';
     });
   }
+});
+
+/** Mirror public submit-list/view records, including the build whose provenance must match. */
+function submission(platform = 'android') {
+  const value = plan();
+  return { id: '12345678-1234-1234-1234-123456789012', app: { id: value.config.mobile.projectId }, platform: platform.toUpperCase(), status: 'FINISHED',
+    androidConfig: { track: 'internal', releaseStatus: 'COMPLETED', rollout: null }, iosConfig: { ascAppIdentifier: '12345' },
+    submittedBuild: { ...build(value), platform: platform.toUpperCase(), fingerprint: { hash: value.observation.fingerprints.production[platform] } } };
+}
+
+test('lost submission receipt reconnects to finished or pending exact builds without submitting again', async () => {
+  for (const platform of ['android', 'ios']) for (const status of ['FINISHED', 'IN_QUEUE', 'IN_PROGRESS', 'AWAITING_BUILD']) {
+    const value = plan(), calls = [], finished = submission(platform); let views = 0, waits = 0, reader;
+    const result = await submit(value, value.config.mobile.targets.find(target => target.platform === platform), { buildId: 'provider-id' }, value.submitProfiles, (args, root) => {
+      calls.push(args[0]); reader = root;
+      assert.equal(readJson(path.join(root, 'app.json')).expo.extra.eas.projectId, value.config.mobile.projectId);
+      assert.equal(fs.existsSync(path.join(root, 'app.config.js')), false);
+      if (args[0] === 'submit:list') return [{ ...finished, status }];
+      assert.deepEqual(args, ['submit:view', finished.id, '--json']);
+      return { ...finished, status: views++ ? 'FINISHED' : status };
+    }, async () => { waits++; });
+    assert.equal(result.id, finished.id); assert.equal(result.completed, true);
+    assert.equal(calls.includes('submit'), false); assert.equal(waits, status === 'FINISHED' ? 0 : 1);
+    assert.equal(fs.existsSync(reader), false);
+  }
+});
+
+test('failed submissions and other builds or destinations permit one fresh submission', async () => {
+  const value = plan(), record = submission();
+  for (const changed of [{ status: 'ERRORED' }, { status: 'CANCELED' }, { submittedBuild: { id: 'another-build' } },
+    { androidConfig: { ...record.androidConfig, track: 'production' } }, { androidConfig: { ...record.androidConfig, releaseStatus: 'DRAFT' } },
+    { androidConfig: { ...record.androidConfig, rollout: 0.5 } }]) {
+    let requests = 0;
+    await submit(value, value.config.mobile.targets[0], { buildId: 'provider-id' }, value.submitProfiles, args => {
+      if (args[0] === 'submit:list') return [{ ...record, ...changed }];
+      assert.equal(args[0], 'submit'); requests++;
+      return `https://expo.dev/accounts/owner/projects/app/submissions/${record.id}`;
+    });
+    assert.equal(requests, 1);
+  }
+});
+
+test('malformed submission reads and identity changes never authorize reuse or another write', async () => {
+  const value = plan(), record = submission();
+  for (const records of [null, {}, [{ ...record, app: { id: 'other' } }], [{ ...record, platform: 'IOS' }],
+    [{ ...record, status: 'UNKNOWN' }], [{ ...record, submittedBuild: { ...record.submittedBuild, appIdentifier: 'wrong.app' } }]]) {
+    await assert.rejects(submit(value, value.config.mobile.targets[0], { buildId: 'provider-id' }, value.submitProfiles, args => {
+      assert.equal(args[0], 'submit:list'); return records;
+    }));
+  }
+  for (const mode of ['denied', 'wrong-id', 'wrong-destination', 'failed']) {
+    await assert.rejects(submit(value, value.config.mobile.targets[0], { buildId: 'provider-id' }, value.submitProfiles, args => {
+      if (args[0] === 'submit:list') return [record];
+      assert.equal(args[0], 'submit:view');
+      if (mode === 'denied') throw new Error('permission denied');
+      return { ...record, ...(mode === 'wrong-id' ? { id: 'other' } : mode === 'failed' ? { status: 'ERRORED' } : { androidConfig: { track: 'production' } }) };
+    }));
+  }
+});
+
+test('submission pagination finds an earlier confirmed build beyond a full first page', async () => {
+  const value = plan(), record = submission(), offsets = [];
+  const result = await submit(value, value.config.mobile.targets[0], { buildId: 'provider-id' }, value.submitProfiles, args => {
+    if (args[0] === 'submit:list') {
+      const offset = args[args.indexOf('--offset') + 1]; offsets.push(offset);
+      return offset === '0' ? Array(50).fill({ ...record, submittedBuild: { id: 'other' } }) : [record];
+    }
+    assert.equal(args[0], 'submit:view'); return record;
+  });
+  assert.deepEqual(offsets, ['0', '50']); assert.equal(result.id, record.id);
+});
+
+test('failed EAS submission keeps provider stdout diagnostics and propagates the failure once', t => {
+  const logs = t.mock.method(console, 'error', () => {}); let calls = 0;
+  const error = Object.assign(new Error('CLI failed'), { stdout: Buffer.from('Play rejected the service account') });
+  assert.throws(() => eas(['submit'], '.', { json: false,
+    /** Model execFileSync carrying the provider message in captured stdout. */
+    execute: () => { calls++; throw error; } }), error);
+  assert.equal(calls, 1); assert.equal(logs.mock.calls[0].arguments[0], 'Play rejected the service account');
 });
 
 test('OTA publishes exact exported files with supported CLI options', t => {

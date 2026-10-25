@@ -1,4 +1,4 @@
-/** @file Verify the pinned upstream CLI exposes every supported interface, without authenticating or publishing. */
+/** @file Verify pinned EAS build/submission status and publication interfaces without authenticating or publishing. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -18,6 +18,7 @@ test('official EAS version and public command flags match the adapter contract',
     'build:view': ['--json'], 'build:version:get': ['--json', '--platform'],
     'build:list': ['--git-commit-hash', '--build-profile', '--offset', '--limit', '--json', '--non-interactive'],
     submit: ['--id', '--path', '--[no-]wait', '--non-interactive'],
+    'submit:list': ['--platform', '--offset', '--limit', '--json', '--non-interactive'], 'submit:view': ['--json'],
     update: ['--input-dir', '--skip-bundler', '--environment', '--json'],
     'env:pull': ['--path', '--environment', '--non-interactive']
   })) {
