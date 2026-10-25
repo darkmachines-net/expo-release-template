@@ -149,7 +149,8 @@ export function submissionId(output, mobile) {
  * Current-run AAB uploads have no provider build identity and rely on saved GitHub receipts.
  */
 export async function submit(plan, target, artifact, submitProfiles, command = eas, wait = delay) {
-  const profile = target.submitProfile ?? plan.config.profiles[plan.profile].easProfile;
+  const selected = plan.config.profiles[plan.profile];
+  const profile = selected.submitProfiles?.[target.id] ?? target.submitProfile ?? selected.easProfile;
   const destination = submitProfiles[profile]?.[target.platform];
   assert(destination && (target.platform === 'android' ? destination.track : destination.ascAppId), 'Configure the exact EAS submission destination before release.');
   const root = publisher(plan.config, plan.profile, { target, submit: submitProfiles });

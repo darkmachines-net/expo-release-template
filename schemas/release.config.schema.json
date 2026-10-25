@@ -13,11 +13,13 @@
       "validate": { "$ref": "#/definitions/command" }, "buildPrepare": { "$ref": "#/definitions/command" },
       "build": { "$ref": "#/definitions/command" }, "verify": { "$ref": "#/definitions/command" }
     } },
+    "development": {"type":"object","additionalProperties":false,"required":["easProfile","environment","approvalEnvironment","platforms","publicEnvironment"],"properties":{"easProfile":{"const":"development"},"environment":{"enum":["development","preview"]},"approvalEnvironment":{"type":"string","minLength":1},"platforms":{"type":"array","minItems":1,"uniqueItems":true,"items":{"enum":["android","ios"]}},"publicEnvironment":{"type":"object","additionalProperties":{"type":"string"}}}},
     "profiles": { "type": "object", "minProperties": 1, "propertyNames": { "$ref": "#/definitions/name" }, "additionalProperties": {
       "type": "object", "additionalProperties": false, "required": ["environment", "approvalEnvironment"],
       "properties": {
         "environment": { "enum": ["development", "preview", "production"] },
         "channel": { "$ref": "#/definitions/name" }, "easProfile": { "$ref": "#/definitions/name" },
+        "submitProfiles": {"type":"object","propertyNames":{"$ref":"#/definitions/name"},"additionalProperties":{"$ref":"#/definitions/name"}},
         "submit": { "type": "boolean" }, "approvalEnvironment": { "type": "string" },
         "submitEnvironment": { "type": "string" }, "signingEnvironment": { "type": "string" },
         "deployEnvironment": { "type": "string" },

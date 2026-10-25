@@ -25,6 +25,29 @@ Hooks are argv arrays executed in the consumer checkout. Each receives one JSON 
 
 ## Package helpers and fingerprints
 
-The root package exports source hashing/environment helpers from [io.mjs](../io.mjs) and selection/version helpers from [engine.mjs](../engine.mjs). `@mchartier/expo-release/engine` exposes the dependency-free engine. `@mchartier/expo-release/expo` exposes `runtimeVersion(version)` and `fingerprintTransform` from [expo.cjs](expo.cjs). Other modules are internal.
+The root package exports source hashing/environment helpers from [io.mjs](../io.mjs) and selection/version helpers from [engine.mjs](../engine.mjs). `@mchartier/expo-release/engine` exposes the dependency-free engine. `@mchartier/expo-release/expo` exposes `runtimeVersion(version)`, `fingerprintTransform` and `developmentConfig` from [expo.cjs](expo.cjs). Other modules are internal.
 
 Use Expo's fingerprint configuration to exclude only allocated metadata. Retain native code, dependency versions, configuration and relevant environment inputs. [prepare](source.mjs) re-inspects compatibility after stamping and rejects a changed fingerprint family; consumer tests must also prove version stamping leaves fingerprints unchanged. The [serverless example](../../examples/expo-only/README.md) shows the configuration hooks in use.
+
+## Development previews
+
+Add a top-level `development` configuration with `easProfile: "development"`, an EAS environment, an existing protected `approvalEnvironment`, supported phone `platforms`, and declared `publicEnvironment` values including `EXPO_RELEASE_VARIANT: "development"`. It is separate from release profiles and has no channel or submission destination. The existing public EAS input rules apply.
+
+Install the Expo-SDK-compatible `expo-dev-client` and keep `expo-updates`. Wrap the final Expo config with `developmentConfig(config)` from `@mchartier/expo-release/expo`. It leaves release builds intact and gives the development app its own name, scheme, application ID and fingerprint runtime. It removes store deep-link ownership and the update-channel header. Development previews require the corresponding development native inputs; they do not validate the release-mode OTA startup lifecycle. Do the final candidate validation in beta.
+
+The EAS development profile must set `developmentClient: true`, `distribution: "internal"`, `autoIncrement: false`, its declared environment and public env values, with no `channel` or inherited profile. Android produces an APK; physical iOS uses ad hoc signing and registered devices. Set up the new development application IDs and signing through official EAS tooling before noninteractive CI; existing store installations remain separate. Rebuild when native dependencies or configuration change.
+
+Add root scripts `"preview": "expo-release preview"` and `"dev:native": "expo-release dev"`. Install dependencies and EAS CLI 25.3.0, authenticate with `eas login`, and install a development build. Then, before opening a review:
+
+```sh
+npm run preview -- --platform android
+# or: npm run preview -- --platform ios
+```
+
+The command exports the current working copy, including uncommitted edits, without source publishing credentials. It checks native inputs again after export, seals the exact files, and publishes them from an inert project to a unique `preview-…` branch. It prints the EAS dashboard link, source/dirty status and native runtime. Open Preview on that page and scan the QR code with a compatible development app. No PR, push, beta promotion or production channel change is required. Each invocation publishes a separate preview; there is no mutable shared development channel. EAS project access controls apply to shared links. Cleanup of old preview branches is an explicit EAS operation.
+
+`npm run dev:native` starts Metro with the development app identity for local live reload. `preview` uploads a self-contained bundle, so its recipient does not need Metro running. Both use declared public configuration; backend selection is independent of OTA channel selection.
+
+Pin an optional manual consumer `.github/workflows/development.yml` caller to the same toolkit SHA as the package and release workflow. The shared workflow accepts `build` or `update`, platform, and an optional full source SHA in the same repository; dispatch it from the default branch. Source install/export run without provider credentials. EAS Build's authenticated source evaluation remains the documented exception. Only the isolated preview publisher receives upload credentials. No release history, reservation or store state is changed. Retries reuse completed current-run producers; lost preview/build acknowledgements can lead to redundant delivery.
+
+Release profiles should be named `beta` and `production` with matching channels. Beta uses TestFlight/Play testing, while production uses its public OTA channel and an explicitly configured store destination. An EAS iOS submission uploads to App Store Connect/TestFlight; public App Store review and release remain separate. Android draft submissions likewise require store completion. Approval environment names are independent and can reuse existing protected environments. For paired targets, `profiles.*.submitProfiles` maps target IDs to EAS submit profiles, overriding the target's default so beta cannot accidentally use a production track.

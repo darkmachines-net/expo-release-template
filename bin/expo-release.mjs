@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** @file Read-only configuration validation and release preview; execution lives in GitHub Actions. */
+/** @file Validate releases, preview selection, publish ad-hoc development bundles, or start the native development launcher. */
 import { parseArgs } from 'node:util';
 import { loadConfig, configured } from '../src/consumer/config.mjs';
 import { selectRelease } from '../src/engine.mjs';
@@ -7,14 +7,17 @@ import { inspect } from '../src/consumer/source.mjs';
 import { github, loadHistory } from '../src/github.mjs';
 import { readJson, run } from '../src/io.mjs';
 import { readEnvironments } from '../src/eas.mjs';
+import { preview, startDevelopment } from '../src/preview.mjs';
 try {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
-    profile: { type: 'string' }, history: { type: 'string' }, rebuild: { type: 'boolean', default: false }, help: { type: 'boolean' },
+    platform: { type: 'string', default: 'android' }, profile: { type: 'string' }, history: { type: 'string' }, rebuild: { type: 'boolean', default: false }, help: { type: 'boolean' },
   } });
-  if (values.help || !positionals.length) console.log('expo-release validate | plan --profile NAME [--rebuild] [--history CONTEXT.json]\nReleases run through the protected GitHub workflow.');
+  if (values.help || !positionals.length) console.log('expo-release validate | plan --profile NAME [--rebuild] [--history CONTEXT.json]\nexpo-release preview [--platform android|ios] | dev\nStore releases run through the protected GitHub workflow.');
   else {
     const root = process.cwd(), config = loadConfig(root);
     if (positionals[0] === 'validate') console.log('Release configuration is valid.');
+    else if (positionals[0] === 'preview') preview(root, values.platform);
+    else if (positionals[0] === 'dev') startDevelopment(root);
     else if (positionals[0] === 'plan') {
       const offline = values.history && readJson(values.history);
       const history = offline?.history ?? await loadHistory(github(config.repository, {
@@ -22,6 +25,6 @@ try {
       }));
       const environments = offline?.environments ?? readEnvironments(config);
       console.log(JSON.stringify(selectRelease(configured(config), values.profile, inspect(root, config, undefined, environments), history, values.rebuild), null, 2));
-    } else throw new Error('Only validate and plan are supported; use GitHub/EAS tools for release operations.');
+    } else throw new Error('Use validate, plan, preview, or dev. Store releases run through GitHub/EAS.');
   }
 } catch (error) { console.error(error.message); process.exitCode = 1; }

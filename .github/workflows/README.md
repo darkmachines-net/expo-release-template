@@ -26,3 +26,7 @@ EAS submissions of cloud builds also reconcile through official submit-list/view
 Each operation makes at most one provider write per workflow attempt. A later explicit retry can repeat other unconfirmed work; redundant delivery remains possible when no receipt or matching provider record survived. Missing evidence never counts as success, denied/read failures stop the job, and a successful deployment missing its receipt is rejected. Transient GitHub GET failures retry twice; there are no automatic write retries or recovery CLI. Repository serialization, protected environments, signing and artifact identity checks apply to every attempt.
 
 A fresh dispatch remains available after failure without GitHub deployment cleanup or manual reconciliation. It selects work against each target's last confirmed success and allocates new versions; previous reservations remain consumed. Existing runs pin their original toolkit revision, so a newly merged retry fix only affects new dispatches.
+
+## Development build and preview workflow
+
+[development.yml](development.yml) is an optional manual workflow alongside release.yml. It never dispatches a release. Configure and use it as described in the [development preview contract](../../src/consumer/README.md#development-previews). Package, release-workflow and development-workflow pins must match; the shared pin updater handles all three.

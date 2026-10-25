@@ -85,9 +85,9 @@ import fs from 'node:fs';console.log(JSON.stringify({request:JSON.parse(fs.readF
 test('minimal serverless Expo fixture selects only its enabled Android release path', () => {
   const root = new URL('../examples/expo-only/',import.meta.url);
   const value=configured(loadConfig(root.pathname.replace(/^\/([A-Z]:)/,'$1')));
-  const input=observation();input.fingerprints.internal={android:'a'.repeat(40)};
-  const result=selectRelease(value,'internal',input);
-  assert.equal(result.server,false);assert.equal(result.versions.mobile,'1.0.0');assert.deepEqual(result.operations,['internal/build/android']);
+  const input=observation();input.fingerprints.beta={android:'a'.repeat(40)};
+  const result=selectRelease(value,'beta',input);
+  assert.equal(result.server,false);assert.equal(result.versions.mobile,'1.0.0');assert.deepEqual(result.operations,['beta/build/android']);
 });
 
 test('OTA inspection and export use the same explicit profile/platform with no publishing token', t => {
