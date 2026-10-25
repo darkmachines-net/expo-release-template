@@ -1,0 +1,30 @@
+{
+  "cli": {
+    "version": "25.3.0",
+    "appVersionSource": "remote",
+    "requireCommit": true
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "environment": "preview",
+      "autoIncrement": false,
+      "env": {
+        "EXPO_RELEASE_VARIANT": "development"
+      }
+    },
+    "beta": {
+      "channel": "beta",
+      "distribution": "store",
+      "environment": "preview",
+      "autoIncrement": true
+    },
+    "production": {
+      "channel": "production",
+      "distribution": "store",
+      "environment": "production",
+      "autoIncrement": true
+    }
+  }
+}

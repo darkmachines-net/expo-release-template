@@ -82,7 +82,7 @@ export async function worker(phase, root, state) {
           'Ordinary EAS builds require remote managed counters with autoIncrement enabled.');
         plan.submitProfiles = easConfig.submit ?? {};
         if (plan.native && config.profiles[profile].submit) for (const target of config.mobile.targets) {
-          const destination = plan.submitProfiles[target.submitProfile ?? config.profiles[profile].easProfile]?.[target.platform];
+          const destination = plan.submitProfiles[config.profiles[profile].submitProfiles?.[target.id] ?? target.submitProfile ?? config.profiles[profile].easProfile]?.[target.platform];
           assert(destination && (target.platform === 'android' ? destination.track : destination.ascAppId), 'Configure each exact EAS submission destination before release.');
         }
       }

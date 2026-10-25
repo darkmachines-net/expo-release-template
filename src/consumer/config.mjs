@@ -16,7 +16,14 @@ export function loadConfig(root = process.cwd()) {
     if (value.mobile) assert(profile.channel && profile.easProfile, 'Mobile profiles need channel and easProfile.');
     if (value.server) assert(profile.deployEnvironment, 'Deployment needs a protected environment.');
   }
+  if (value.development) {
+    assert(value.mobile && !value.profiles.development, 'Development previews are separate from release profiles.');
+    sourceEnvironment(value.development.publicEnvironment);
+    assert(value.development.publicEnvironment.EXPO_RELEASE_VARIANT === 'development', 'Development needs its explicit native variant.');
+  }
   if (value.mobile) {
+    for (const profile of Object.values(value.profiles)) for (const id of Object.keys(profile.submitProfiles ?? {}))
+      assert(value.mobile.targets.some(target => target.id === id), 'Submission override names an unknown native target.');
     assert(new Set(value.mobile.targets.map(t => t.id)).size === value.mobile.targets.length, 'Duplicate native target.');
     assert(value.mobile.builder !== 'command' || (value.hooks?.buildPrepare && value.hooks?.build && value.hooks?.verify), 'Command builds require preparation, build and verification hooks.');
     assert(value.mobile.pairCodeFloor === undefined || (value.mobile.builder === 'command' && value.mobile.targets.length === 2

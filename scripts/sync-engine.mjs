@@ -12,9 +12,12 @@ for (const directory of directories) {
   assert(pkg.devDependencies?.['@mchartier/expo-release'], 'Consumer must declare the toolkit as a development dependency.');
   pkg.devDependencies['@mchartier/expo-release'] = `git+https://github.com/darkmachines-net/expo-release-template.git#${sha}`;
   writeJson(file, pkg);
-  const workflow = path.join(root, '.github/workflows/release.yml');
-  const source = fs.readFileSync(workflow, 'utf8');
-  assert(/expo-release-template\/\.github\/workflows\/release\.yml@[a-f0-9]{40}/.test(source), 'Missing reusable release workflow pin.');
-  fs.writeFileSync(workflow, source.replace(/[\w.-]+\/expo-release-template\/\.github\/workflows\/release\.yml@[a-f0-9]{40}/g, `darkmachines-net/expo-release-template/.github/workflows/release.yml@${sha}`));
+  for (const name of ['release', 'development']) {
+    const workflow = path.join(root, `.github/workflows/${name}.yml`);
+    if (!fs.existsSync(workflow) && name === 'development') continue;
+    const source = fs.readFileSync(workflow, 'utf8');
+    assert(/expo-release-template\/\.github\/workflows\/(?:release|development)\.yml@[a-f0-9]{40}/.test(source), 'Missing reusable release workflow pin.');
+    fs.writeFileSync(workflow, source.replace(/[\w.-]+\/expo-release-template\/\.github\/workflows\/(release|development)\.yml@[a-f0-9]{40}/g, (_match, kind) => `darkmachines-net/expo-release-template/.github/workflows/${kind}.yml@${sha}`));
+  }
   run('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: root, stdio: 'inherit' });
 }

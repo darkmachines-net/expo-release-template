@@ -3,6 +3,19 @@
   "version": "0.0.0",
   "private": true,
   "main": "index.js",
-  "dependencies": { "expo": "57.0.7", "expo-updates": "57.0.8", "react": "19.2.3", "react-native": "0.86.3" },
-  "devDependencies": { "@expo/fingerprint": "0.20.13" }
+  "dependencies": {
+    "expo": "57.0.7",
+    "expo-updates": "57.0.8",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "expo-dev-client": "~57.0.19"
+  },
+  "devDependencies": {
+    "@expo/fingerprint": "0.20.13"
+  },
+  "scripts": {
+    "release": "expo-release",
+    "preview": "expo-release preview",
+    "dev:native": "expo-release dev"
+  }
 }
