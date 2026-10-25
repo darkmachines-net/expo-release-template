@@ -1,4 +1,4 @@
-/** @file Single-attempt upstream EAS operations; inert status readers and publishers preserve project identity. */
+/** @file Official EAS operations; retries reconnect to accepted builds through isolated public status readers. */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -85,7 +85,8 @@ export function verifyBuild(build, plan, target) {
 }
 
 /**
- * Enqueue exactly once per run and wait using public read commands; errors do not retry within this run.
+ * Reuse this run's finished/pending cloud build; enqueue only when no usable build exists.
+ * Public list/read failures stop the job, and each invocation makes at most one build request.
  * Status reads use an inert project, so monorepos need no root Expo config and reads never evaluate source.
  * EAS Build evaluates the consumer's source configuration with EXPO_TOKEN for existing
  * EAS-managed credentials. This authenticated evaluation is the explicit exception to
@@ -93,21 +94,38 @@ export function verifyBuild(build, plan, target) {
  */
 export async function cloudBuild(root, plan, target, command = eas) {
   const profile = plan.config.profiles[plan.profile];
-  const result = command(['build', '--platform', target.platform, '--profile', profile.easProfile, '--message', `release:${plan.run}:${target.id}`,
-    '--non-interactive', '--freeze-credentials', '--no-wait', '--json'], path.join(root, plan.config.mobile.directory),
-    { environment: { ...plan.environments[plan.profile], EAS_NO_VCS: '0' } });
-  assert(Array.isArray(result) && result.length === 1 && result[0].id, 'EAS build acceptance is uncertain; this run cannot confirm success.');
-  const id = result[0].id;
-  console.error(`EAS build ${id}`);
   const inert = publisher(plan.config, plan.profile);
   try {
+    const builds = [], message = `release:${plan.run}:${target.id}`;
+    for (let offset = 0; ; offset += 50) {
+      assert(offset < 1000, 'Too many matching EAS builds to reconcile.');
+      const batch = command(['build:list', '--platform', target.platform, '--build-profile', profile.easProfile,
+        '--git-commit-hash', plan.build, '--limit', '50', '--offset', String(offset), '--non-interactive', '--json'], inert);
+      assert(Array.isArray(batch), 'Malformed EAS build list.');
+      builds.push(...batch.filter(build => build.message === message));
+      if (batch.length < 50) break;
+    }
+    for (const build of builds) assert(typeof build.id === 'string' && build.id && build.app?.id === plan.config.mobile.projectId && build.gitCommitHash === plan.build
+      && build.platform?.toLowerCase() === target.platform && build.buildProfile === profile.easProfile
+      && build.appIdentifier === target.applicationId, 'Accepted EAS build identity differs.');
+    const accepted = builds.find(build => build.status === 'FINISHED')
+      ?? builds.find(build => !['ERRORED', 'CANCELED'].includes(build.status));
+    let id = accepted?.id;
+    if (!id) {
+      const result = command(['build', '--platform', target.platform, '--profile', profile.easProfile, '--message', message,
+        '--non-interactive', '--freeze-credentials', '--no-wait', '--json'], path.join(root, plan.config.mobile.directory),
+      { environment: { ...plan.environments[plan.profile], EAS_NO_VCS: '0' } });
+      assert(Array.isArray(result) && result.length === 1 && result[0].id, 'EAS build acceptance is uncertain; retry will check EAS before building.');
+      id = result[0].id;
+    }
+    console.error(`EAS build ${id}`);
     for (let attempt = 0; attempt < 480; attempt++) {
       const build = command(['build:view', id, '--json'], inert);
       if (build.status === 'FINISHED') return verifyBuild(build, plan, target);
-      assert(!['ERRORED', 'CANCELED'].includes(build.status), `EAS build ${id} ${build.status}; a fresh release may proceed.`);
+      assert(!['ERRORED', 'CANCELED'].includes(build.status), `EAS build ${id} ${build.status}; retry the failed job to build again.`);
       await delay(15000);
     }
-    throw new Error(`EAS build ${id} is still pending; a fresh release may create a redundant build.`);
+    throw new Error(`EAS build ${id} is still pending; retry the failed job to resume waiting.`);
   } finally { fs.rmSync(inert, { recursive: true, force: true }); }
 }
 

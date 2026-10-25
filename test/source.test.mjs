@@ -1,4 +1,4 @@
-/** @file Build commits, serverless configuration and rejection of unsafe source preparation. */
+/** @file Build commits, retry plan reuse, serverless configuration and unsafe preparation rejection. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,6 +6,8 @@ import path from 'node:path';
 import { prepare, hook, exportBundle } from '../src/consumer/source.mjs';
 import { configured, loadConfig } from '../src/consumer/config.mjs';
 import { selectRelease } from '../src/engine.mjs';
+import { run, writeJson, sourceEnvironment, readJson } from '../src/io.mjs';
+import { fileURLToPath } from 'node:url';
 import { repository, config, observation, temporary, plan } from './helpers.mjs';
 
 /** Prepare a server-only source fixture so commit behavior needs no provider or Expo installation. */
@@ -32,6 +34,26 @@ test('versions are stamped into a child commit while the default branch stays un
   assert.equal(repo.git(['show',`${result.build}:version.json`]),'{"version":"1.2.4"}');
   assert.equal(repo.git(['show',`${repo.context.source}:version.json`]),'{"version":"1.2.3"}');
   assert.equal(repo.git(['diff','--name-only',repo.context.source,result.build]),'version.json');
+});
+
+test('a retried preparation restores the exact build commit and versions without invoking source hooks', t => {
+  const root = temporary(t), state = temporary(t), value = plan();
+  delete value.config.mobile.platforms;
+  value.config.install = [['must-not-execute']];
+  value.config.hooks = { prepare: ['must-not-execute'] };
+  writeJson(path.join(root, 'release.config.json'), value.config);
+  writeJson(path.join(state, 'plan.json'), value);
+  fs.writeFileSync(path.join(state, 'build.bundle'), 'original immutable bundle');
+  const output = path.join(state, 'outputs');
+  const env = { ...sourceEnvironment(), GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main',
+    GITHUB_REPOSITORY: value.repository, GITHUB_SHA: value.source, TOOLKIT_SHA: value.toolkit, GITHUB_RUN_ID: value.run,
+    GITHUB_RUN_ATTEMPT: '2', RELEASE_PROFILE: value.profile, RELEASE_REUSE: 'true', RELEASE_REBUILD: 'true', GITHUB_OUTPUT: output };
+  for (const phase of ['install', 'prepare']) run(process.execPath, [fileURLToPath(new URL('../bin/worker.mjs', import.meta.url)), phase, root, state], { env });
+  assert.deepEqual(readJson(path.join(state, 'plan.json')), value);
+  assert.equal(fs.readFileSync(path.join(state, 'build.bundle'), 'utf8'), 'original immutable bundle');
+  assert.match(fs.readFileSync(output, 'utf8'), new RegExp(`build=${value.build}`));
+  value.run = 'other'; writeJson(path.join(state, 'plan.json'), value);
+  assert.throws(() => run(process.execPath, [fileURLToPath(new URL('../bin/worker.mjs', import.meta.url)), 'prepare', root, state], { env, stdio: 'pipe' }));
 });
 
 test('preparation cannot change application code or publish from an attached branch', t => {

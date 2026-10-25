@@ -16,6 +16,7 @@ test('official EAS version and public command flags match the adapter contract',
   for (const [name, flags] of Object.entries({
     build: ['--json', '--freeze-credentials', '--non-interactive', '--[no-]wait'],
     'build:view': ['--json'], 'build:version:get': ['--json', '--platform'],
+    'build:list': ['--git-commit-hash', '--build-profile', '--offset', '--limit', '--json', '--non-interactive'],
     submit: ['--id', '--path', '--[no-]wait', '--non-interactive'],
     update: ['--input-dir', '--skip-bundler', '--environment', '--json'],
     'env:pull': ['--path', '--environment', '--non-interactive']

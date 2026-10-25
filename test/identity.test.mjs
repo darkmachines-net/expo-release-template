@@ -1,10 +1,10 @@
-/** @file Git binary/deletion detection, artifact binding and credential isolation. */
+/** @file Git input detection, retry artifact identity, partial native output and credential isolation. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { trackedIdentity, inputIdentity, sourceEnvironment, seal, verify, inventory, hash, within, writeJson } from '../src/io.mjs';
-import { hostedIdentity } from '../src/worker.mjs';
+import { hostedIdentity, nativeArtifacts } from '../src/worker.mjs';
 import { verifyPlan, verifyPins, loadConfig } from '../src/consumer/config.mjs';
 import { fingerprintTransform, runtimeVersion } from '../src/consumer/expo.cjs';
 import { repository, temporary, config, plan } from './helpers.mjs';
@@ -86,6 +86,19 @@ test('extra and missing artifact files fail verification', t => {
   assert.throws(() => verify(directory, plan(), 'ota', receipt));
 });
 
+test('native recording/submission accepts a completed sibling but never an empty or unsealed build set', t => {
+  const root = temporary(t), value = plan(), directory = path.join(root, 'ios');
+  assert.throws(() => nativeArtifacts(value, root), /No completed native build artifacts/);
+  writeJson(path.join(directory, 'build.json'), { id: 'ios-build' }); seal(directory, value, 'ios');
+  assert.deepEqual(nativeArtifacts(value, root).map(target => target.id), ['ios']);
+  fs.mkdirSync(path.join(root, 'android'));
+  assert.throws(() => nativeArtifacts(value, root));
+  writeJson(path.join(root, 'android/build.json'), { id: 'android-build' }); seal(path.join(root, 'android'), value, 'android');
+  assert.deepEqual(nativeArtifacts(value, root).map(target => target.id), ['android', 'ios']);
+  fs.writeFileSync(path.join(directory, 'build.json'), 'tampered');
+  assert.throws(() => nativeArtifacts(value, root), /digest mismatch/);
+});
+
 test('local, legacy and previous-run receipts cannot authorize hosted publication', t => {
   const directory = temporary(t); fs.writeFileSync(path.join(directory, 'bundle'), 'one');
   const current = seal(directory, plan(), 'ota'); t.after(() => fs.rmSync(`${directory}.json`, { force: true }));
@@ -106,12 +119,13 @@ test('source processes never inherit publication or signing variables', () => {
   for (const key of ['EXPO_TOKEN', 'NODE_OPTIONS', 'ANDROID_KEY_PASSWORD', 'PRIVATE_KEY', 'GITHUB_ENV']) assert.throws(() => sourceEnvironment({ [key]: 'x' }));
 });
 
-test('publish context requires a fresh protected default-branch dispatch', () => {
+test('publish context accepts retries of the same protected default-branch dispatch', () => {
   const env = { GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main', GITHUB_REPOSITORY: 'owner/app',
     GITHUB_SHA: 'a'.repeat(40), TOOLKIT_SHA: 'c'.repeat(40), GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1' };
   assert.equal(hostedIdentity(config(), env).source, env.GITHUB_SHA);
-  for (const [key, value] of Object.entries({ GITHUB_EVENT_NAME: 'pull_request', GITHUB_REF: 'refs/heads/feature', GITHUB_REPOSITORY: 'other/app', TOOLKIT_SHA: 'main', GITHUB_RUN_ATTEMPT: '2' }))
-    assert.throws(() => hostedIdentity(config(), { ...env, [key]: value }), /fresh default-branch/);
+  assert.deepEqual(hostedIdentity(config(), { ...env, GITHUB_RUN_ATTEMPT: '2' }), hostedIdentity(config(), env));
+  for (const [key, value] of Object.entries({ GITHUB_EVENT_NAME: 'pull_request', GITHUB_REF: 'refs/heads/feature', GITHUB_REPOSITORY: 'other/app', TOOLKIT_SHA: 'main', GITHUB_RUN_ATTEMPT: '0' }))
+    assert.throws(() => hostedIdentity(config(), { ...env, [key]: value }), /protected default-branch/);
 });
 
 test('artifact plans cannot change configured producer or destination', () => {

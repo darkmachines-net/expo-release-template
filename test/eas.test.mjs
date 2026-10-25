@@ -32,14 +32,14 @@ test('cloud build starts in the app directory and reads its exact ID through an 
       assert.notEqual(cwd, source); assert.notEqual(cwd, path.join(source, directory));
       assert.equal(readJson(path.join(cwd, 'app.json')).expo.extra.eas.projectId, value.config.mobile.projectId);
       assert.equal(fs.existsSync(path.join(cwd, 'app.config.js')), false);
-      return build(value);
+      return args[0] === 'build:list' ? [] : build(value);
     };
     const result = await cloudBuild(source, value, value.config.mobile.targets[0], command);
-    assert.equal(result.id, 'provider-id'); assert.equal(calls.length, 2);
-    assert.equal(calls[0].cwd, path.join(source, directory)); assert.equal(calls[0].options.environment.EAS_NO_VCS, '0');
-    assert.ok(calls[0].args.includes('--no-wait')); assert.ok(calls[0].args.includes('--freeze-credentials'));
-    assert.ok(!calls[0].args.includes('--auto-submit')); assert.deepEqual(calls[1].args, ['build:view', 'provider-id', '--json']);
-    assert.equal(fs.existsSync(calls[1].cwd), false);
+    assert.equal(result.id, 'provider-id'); assert.equal(calls.length, 3);
+    assert.equal(calls[1].cwd, path.join(source, directory)); assert.equal(calls[1].options.environment.EAS_NO_VCS, '0');
+    assert.ok(calls[1].args.includes('--no-wait')); assert.ok(calls[1].args.includes('--freeze-credentials'));
+    assert.ok(!calls[1].args.includes('--auto-submit')); assert.deepEqual(calls[2].args, ['build:view', 'provider-id', '--json']);
+    assert.equal(fs.existsSync(calls[2].cwd), false);
   }
 });
 
@@ -48,11 +48,56 @@ test('lost build acknowledgement or failed build does not enqueue again', async 
     let starts = 0, reader;
     await assert.rejects(cloudBuild('source', plan(), config().mobile.targets[0], (args, cwd) => {
       if (args[0] === 'build') { starts++; if (failure === 'lost') throw new Error('lost acknowledgement'); return failure === 'empty' ? [] : [{ id: 'id' }]; }
+      if (args[0] === 'build:list') return [];
       reader = cwd; if (failure === 'read') throw new Error('status read unavailable');
       return { status: 'ERRORED' };
     }));
     assert.equal(starts, 1);
     if (reader) assert.equal(fs.existsSync(reader), false);
+  }
+});
+
+test('job retry reuses a finished or accepted build after lost local acknowledgement', async () => {
+  for (const status of ['FINISHED', 'IN_PROGRESS', 'IN_QUEUE']) {
+    const value = plan(), accepted = { ...build(value), status, message: `release:${value.run}:android` }, calls = [];
+    const result = await cloudBuild('source', value, value.config.mobile.targets[0], args => {
+      calls.push(args[0]);
+      if (args[0] === 'build:list') {
+        assert.equal(args[args.indexOf('--git-commit-hash') + 1], value.build);
+        return [accepted];
+      }
+      assert.equal(args[0], 'build:view'); return build(value);
+    });
+    assert.equal(result.id, accepted.id);
+    assert.deepEqual(calls, ['build:list', 'build:view']);
+  }
+});
+
+test('failed cloud builds can be replaced while another run or wrong identity cannot be reused', async () => {
+  const value = plan(), target = value.config.mobile.targets[0];
+  for (const status of ['ERRORED', 'CANCELED']) {
+    let starts = 0;
+    await cloudBuild('source', value, target, args => {
+      if (args[0] === 'build:list') return [{ ...build(value), status, message: `release:${value.run}:android` }];
+      if (args[0] === 'build') { starts++; return [{ id: 'provider-id' }]; }
+      return build(value);
+    });
+    assert.equal(starts, 1);
+  }
+  for (const changed of [{ id: null }, { app: { id: 'other' } }, { gitCommitHash: value.source }, { platform: 'IOS' }, { appIdentifier: 'other.app' }, { buildProfile: 'internal' }]) {
+    await assert.rejects(cloudBuild('source', value, target, args => {
+      assert.equal(args[0], 'build:list'); return [{ ...build(value), ...changed, message: `release:${value.run}:android` }];
+    }), /identity differs/);
+  }
+});
+
+test('build-list errors or malformed responses never authorize another cloud build', async () => {
+  for (const result of [null, {}, 'unavailable']) {
+    await assert.rejects(cloudBuild('source', plan(), config().mobile.targets[0], args => {
+      assert.equal(args[0], 'build:list');
+      if (result === 'unavailable') throw new Error('EAS unavailable');
+      return result;
+    }));
   }
 });
 
