@@ -1,4 +1,4 @@
-/** @file Validate the small configuration contract; EAS remains authoritative for build/submit profiles. */
+/** @file Validate release destinations and native builder groups; EAS owns build/submit profiles. */
 import Ajv from 'ajv';
 import { readJson, within, sourceEnvironment, hash } from '../io.mjs';
 import { assert } from '../engine.mjs';
@@ -25,11 +25,39 @@ export function loadConfig(root = process.cwd()) {
     for (const profile of Object.values(value.profiles)) for (const id of Object.keys(profile.submitProfiles ?? {}))
       assert(value.mobile.targets.some(target => target.id === id), 'Submission override names an unknown native target.');
     assert(new Set(value.mobile.targets.map(t => t.id)).size === value.mobile.targets.length, 'Duplicate native target.');
-    assert(value.mobile.builder !== 'command' || (value.hooks?.buildPrepare && value.hooks?.build && value.hooks?.verify), 'Command builds require preparation, build and verification hooks.');
-    assert(value.mobile.pairCodeFloor === undefined || (value.mobile.builder === 'command' && value.mobile.targets.length === 2
-      && value.mobile.targets.every(t => t.platform === 'android')), 'Paired codes require two Android command-build targets.');
+    const commands = value.mobile.targets.filter(t => targetBuilder(value, t) === 'command');
+    assert(!commands.length || (value.hooks?.buildPrepare && value.hooks?.build && value.hooks?.verify), 'Command builds require preparation, build and verification hooks.');
+    assert(commands.every(t => t.platform === 'android'), 'Command builds support Android only.');
+    assert(!commands.length || value.mobile.targets.every(t => t.id !== 'pair'), 'The pair matrix ID is reserved for command builds.');
+    assert(value.mobile.pairCodeFloor === undefined || (commands.length === 2
+      && value.mobile.targets.every(t => t.platform === 'android' || (t.buildNumberFloor ?? 0) <= value.mobile.pairCodeFloor)),
+    'Paired codes require two Android command-build targets and a floor covering iOS build numbers.');
+    assert(!commands.length || commands.length === value.mobile.targets.length || value.mobile.pairCodeFloor !== undefined,
+      'Mixed native builders require paired local build numbers.');
   }
   return value;
+}
+
+/** Resolve a target override while preserving existing app-wide builder defaults. */
+export function targetBuilder(config, target) { return target.builder ?? config.mobile.builder ?? 'eas'; }
+
+/** Build Android command targets together and cloud targets independently in the same release. */
+export function nativeMatrix(config) {
+  const targets = config.mobile?.targets ?? [];
+  return [
+    ...(targets.some(t => targetBuilder(config, t) === 'command') ? [{ id: 'pair', platform: 'android', builder: 'command' }] : []),
+    ...targets.filter(t => targetBuilder(config, t) === 'eas').map(t => ({ ...t, builder: 'eas' })),
+  ];
+}
+
+/** Require explicit local reservations for paired releases and remote increments for ordinary cloud builds. */
+export function verifyCounters(config, easConfig, buildProfile) {
+  if (config.mobile.pairCodeFloor !== undefined) assert(easConfig.cli?.appVersionSource === 'local'
+    && buildProfile.autoIncrement === false && (buildProfile.ios?.autoIncrement ?? false) === false
+    && (buildProfile.android?.autoIncrement ?? false) === false,
+  'Paired releases require local reserved counters with autoIncrement disabled.');
+  else if (nativeMatrix(config).some(t => t.builder === 'eas')) assert(easConfig.cli?.appVersionSource === 'remote' && buildProfile.autoIncrement === true,
+    'Ordinary EAS builds require remote managed counters with autoIncrement enabled.');
 }
 
 /** Add derived platforms without growing the configuration DSL. */

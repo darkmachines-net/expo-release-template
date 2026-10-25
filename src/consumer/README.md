@@ -10,6 +10,22 @@ Public source values come from `profiles.*.publicEnvironment` and declared `mobi
 
 ## Hooks
 
+### Paired Android builds with iOS
+
+Calibrate can keep `mobile.builder: "command"` for its phone/watch pair and add an
+iOS target with `builder: "eas"`. The matrix builds the Android pair once and iOS
+independently. The command hook returns only its Android targets. Each completed
+group can advance its build/submission baselines while another group is incomplete;
+a partial Android pair is rejected. Submission still follows configured target order.
+
+For this combination, `pairCodeFloor` must cover all previously consumed Android
+and iOS codes. Use EAS `appVersionSource: "local"` and `autoIncrement: false` on each
+build profile. The prepare hook must stamp iOS `buildNumber` with `plan.pair[0]`;
+the cloud build identity check requires that exact reservation. Ordinary EAS apps
+continue to use remote counters and automatic increments. Profile environment names
+select GitHub environments; configure reviewer-free internal environments and keep
+production approvals separate.
+
 Hooks are argv arrays executed in the consumer checkout. Each receives one JSON object on stdin containing `root`, `action` and the fields below, and returns one JSON object on stdout. Send diagnostic and child-process logs to stderr. An absent optional hook returns `{}`. Hooks never publish or write release lifecycle state.
 
 | Hook | Request and result |

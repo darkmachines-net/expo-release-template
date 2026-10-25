@@ -34,9 +34,10 @@
         "owner": { "$ref": "#/definitions/name" }, "slug": { "$ref": "#/definitions/name" },
         "publicVariables": { "$ref": "#/definitions/paths" },
         "pairCodeFloor": { "type": "integer", "minimum": 0, "maximum": 2099999997 },
-        "targets": { "type": "array", "minItems": 1, "maxItems": 2, "items": {
+        "targets": { "type": "array", "minItems": 1, "maxItems": 3, "items": {
           "type": "object", "additionalProperties": false, "required": ["id", "platform", "applicationId"], "properties": {
             "id": { "$ref": "#/definitions/name" }, "platform": { "enum": ["android", "ios"] },
+            "builder": { "enum": ["eas", "command"] },
             "applicationId": { "type": "string", "pattern": "^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+$" },
             "submitProfile": { "$ref": "#/definitions/name" }
             ,"buildNumberFloor": { "type": "integer", "minimum": 0 }

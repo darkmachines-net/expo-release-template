@@ -1,4 +1,4 @@
-/** @file Credential-free container builds and exports; command native builds receive signing inputs only. */
+/** @file Credential-free container builds and grouped Android builds; cloud targets use their own worker. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { assert } from './engine.mjs';
 import { run, within, sourceEnvironment, seal } from './io.mjs';
 import { hook } from './consumer/source.mjs';
+import { targetBuilder } from './consumer/config.mjs';
 
 /** Build a multi-platform OCI archive without registry authentication, then smoke-test its amd64 image. */
 export async function buildServer(root, plan, directory, execute = run) {
@@ -57,7 +58,7 @@ export async function smoke(root, plan, archive, execute = run, fetcher = fetch)
  * Decode ANDROID_KEYSTORE_BASE64 into a private temporary key, removed even on failure.
  * Only the build hook receives ANDROID_KEYSTORE, ANDROID_STORE_PASSWORD,
  * ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD; verification uses the source-only environment.
- * The hook returns target IDs and writes directory/<target.id>/native.aab for submission;
+ * The hook returns only command target IDs and writes directory/<target.id>/native.aab for submission;
  * additional artifacts such as native.apk are governed by the consumer's verify hook.
  */
 export function commandBuild(root, plan, directory, environment = process.env) {
@@ -71,8 +72,9 @@ export function commandBuild(root, plan, directory, environment = process.env) {
     const command = plan.config.hooks.build;
     const env = { ...sourceEnvironment(plan.environments[plan.profile]), ...signing };
     const result = JSON.parse(run(command[0], command.slice(1), { cwd: root, env, input: JSON.stringify({ root, action: 'build', plan, directory: path.resolve(directory) }) }));
-    assert(result.targets?.length === plan.config.mobile.targets.length, 'Paired build returned an incomplete artifact set.');
-    for (const target of plan.config.mobile.targets) {
+    const targets = plan.config.mobile.targets.filter(t => targetBuilder(plan.config, t) === 'command');
+    assert(result.targets?.length === targets.length, 'Paired build returned an incomplete artifact set.');
+    for (const target of targets) {
       const output = within(directory, target.id);
       assert(result.targets.includes(target.id), 'Builder returned a different target.');
       hook(root, plan.config, 'verify', { plan, target: target.id, directory: output }, plan.environments[plan.profile]);

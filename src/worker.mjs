@@ -1,8 +1,8 @@
-/** @file Fixed GitHub jobs resume immutable plans and reuse confirmed operations on explicit job retries. */
+/** @file Fixed GitHub jobs resume immutable plans across paired Android and independent EAS build targets. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { assert } from './engine.mjs';
-import { loadConfig, verifyPins, verifyPlan } from './consumer/config.mjs';
+import { loadConfig, verifyPins, verifyPlan, targetBuilder, nativeMatrix, verifyCounters } from './consumer/config.mjs';
 import { git, run, readJson, writeJson, sourceEnvironment, seal, verify, hash } from './io.mjs';
 import { prepare, hook, exportBundle } from './consumer/source.mjs';
 import { github, loadHistory, reserve, begin, complete, perform, receipt } from './github.mjs';
@@ -26,7 +26,7 @@ export function hostedIdentity(config, env = process.env) {
   return { repository: config.repository, source: env.GITHUB_SHA, toolkit: env.TOOLKIT_SHA, run: env.GITHUB_RUN_ID };
 }
 
-/** Select completed native artifacts, rejecting partial/tampered bundles and an entirely missing build set. */
+/** Select completed native artifacts; command pairs are atomic while cloud siblings may finish independently. */
 export function nativeArtifacts(plan, artifacts) {
   const targets = plan.config.mobile.targets.filter(target => {
     const directory = path.join(artifacts, target.id);
@@ -35,7 +35,9 @@ export function nativeArtifacts(plan, artifacts) {
     return true;
   });
   assert(targets.length, 'No completed native build artifacts were downloaded; retry the native-build job before submission.');
-  assert(plan.config.mobile.builder !== 'command' || targets.length === plan.config.mobile.targets.length, 'Paired native artifacts are incomplete.');
+  const commands = plan.config.mobile.targets.filter(t => targetBuilder(plan.config, t) === 'command');
+  const completed = targets.filter(t => targetBuilder(plan.config, t) === 'command');
+  assert(!completed.length || completed.length === commands.length, 'Paired native artifacts are incomplete.');
   return targets;
 }
 
@@ -55,7 +57,7 @@ export async function worker(phase, root, state) {
     assert(Object.entries(identity).every(([key, value]) => saved[key] === value) && hash(saved.config) === hash(config), 'Restored context identity differs.');
     for (const [key, value] of Object.entries({ mobile: !!config.mobile, approval: selected.approvalEnvironment,
       signing: selected.signingEnvironment || selected.approvalEnvironment, submit_environment: selected.submitEnvironment || selected.approvalEnvironment,
-      deploy_environment: selected.deployEnvironment, builder: config.mobile?.builder ?? 'eas' })) output(key, value);
+      deploy_environment: selected.deployEnvironment, cloud: nativeMatrix(config).some(t => t.builder === 'eas') })) output(key, value);
     return;
   }
   if (reused && phase !== 'prepare') return;
@@ -78,8 +80,7 @@ export async function worker(phase, root, state) {
           'EAS build profile channel/environment differs from release configuration.');
         assert(Object.entries(buildProfile.env ?? {}).every(([key, value]) => plan.environments[profile][key] === value),
           'EAS profile env values must be declared in the same public source environment.');
-        if (config.mobile.builder !== 'command') assert(easConfig.cli?.appVersionSource === 'remote' && buildProfile.autoIncrement === true,
-          'Ordinary EAS builds require remote managed counters with autoIncrement enabled.');
+        verifyCounters(config, easConfig, buildProfile);
         plan.submitProfiles = easConfig.submit ?? {};
         if (plan.native && config.profiles[profile].submit) for (const target of config.mobile.targets) {
           const destination = plan.submitProfiles[config.profiles[profile].submitProfiles?.[target.id] ?? target.submitProfile ?? config.profiles[profile].easProfile]?.[target.platform];
@@ -90,9 +91,9 @@ export async function worker(phase, root, state) {
       git(root, ['bundle', 'create', path.resolve(state, 'build.bundle'), 'refs/heads/expo-release-build', `^${plan.source}`]);
     }
     writeJson(planFile, plan);
-    const nativeMatrix = !plan.native ? [] : config.mobile.builder === 'command' ? [{ id: 'pair', platform: 'android' }] : config.mobile.targets;
+    const builds = !plan.native ? [] : nativeMatrix(config);
     for (const [key, value] of Object.entries({ noop: plan.noop, server: plan.server, native: plan.native, ota: plan.ota,
-      native_matrix: nativeMatrix, build: plan.build, submit: plan.native && config.profiles[profile].submit === true })) output(key, value);
+      native_matrix: builds, build: plan.build, submit: plan.native && config.profiles[profile].submit === true })) output(key, value);
     return;
   }
   const plan = readJson(planFile);
@@ -116,7 +117,7 @@ export async function worker(phase, root, state) {
   if (phase === 'native-prebuild') { hook(root, config, 'buildPrepare', { plan }, plan.environments[plan.profile]); return; }
   if (phase === 'native-command') { commandBuild(root, plan, artifacts); return; }
   if (phase === 'native-cloud') {
-    assert(target, 'Unknown native target.');
+    assert(target && targetBuilder(config, target) === 'eas', 'Unknown cloud native target.');
     const result = await cloudBuild(root, plan, target);
     const directory = path.join(artifacts, target.id);
     writeJson(path.join(directory, 'build.json'), result); seal(directory, plan, target.id); return;
@@ -125,8 +126,9 @@ export async function worker(phase, root, state) {
     const intents = readJson(path.join(state, 'native-intents.json'));
     for (const value of nativeArtifacts(plan, artifacts)) {
       const directory = path.join(artifacts, value.id);
-      let result = config.mobile.builder === 'command' ? { artifact: 'native.aab', digest: hash(fs.readFileSync(path.join(directory, 'native.aab'))) } : null;
-      if (config.mobile.builder !== 'command') {
+      const command = targetBuilder(config, value) === 'command';
+      let result = command ? { artifact: 'native.aab', digest: hash(fs.readFileSync(path.join(directory, 'native.aab'))) } : null;
+      if (!command) {
         const saved = readJson(path.join(directory, 'build.json')), inert = publisher(config, plan.profile);
         try { result = verifyBuild(eas(['build:view', saved.id, '--json'], inert), plan, value); }
         finally { fs.rmSync(inert, { recursive: true, force: true }); }
@@ -134,7 +136,7 @@ export async function worker(phase, root, state) {
       if (phase === 'native-record') await complete(client, plan, `build/${value.id}`, intents[value.id], result);
       else {
         await perform(client, plan, `submit/${value.id}`, () => submit(plan, value,
-          config.mobile.builder === 'command' ? { file: path.join(directory, 'native.aab') } : { buildId: result.id }, plan.submitProfiles));
+          command ? { file: path.join(directory, 'native.aab') } : { buildId: result.id }, plan.submitProfiles));
       }
     }
     return;

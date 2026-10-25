@@ -1,4 +1,4 @@
-/** @file Check fixed workflow ordering, retry artifact reuse, credential boundaries and upstream setup. */
+/** @file Check fixed ordering, mixed native credential boundaries, retry reuse and upstream setup. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -68,6 +68,10 @@ test('separate native steps scope signing and cloud authentication', () => {
   const cloud = steps.find(step => step.run?.endsWith('native-cloud'));
   assert.deepEqual(Object.keys(native.env).sort(), ['ANDROID_KEYSTORE_BASE64','ANDROID_STORE_PASSWORD','ANDROID_KEY_ALIAS','ANDROID_KEY_PASSWORD'].sort());
   assert.deepEqual(Object.keys(cloud.env), ['EXPO_TOKEN']);
+  assert.equal(native.if, "matrix.target.builder == 'command'");
+  assert.equal(cloud.if, "matrix.target.builder == 'eas'");
+  assert.match(steps.find(step => step.uses === './.toolkit/.github/actions/setup').with.eas, /matrix.target.builder/);
+  assert.match(jobs['native-record'].steps.find(step => step.uses === './.toolkit/.github/actions/setup').with.eas, /outputs.cloud/);
   assert.ok(steps.findIndex(step => step.run?.includes('android-tools')) < steps.indexOf(native));
   assert.ok(jobs['native-build'].environment);
 });
