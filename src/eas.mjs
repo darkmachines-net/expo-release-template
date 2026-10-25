@@ -1,4 +1,4 @@
-/** @file Single-attempt upstream EAS operations; inert publishers preserve identity without blocking future releases on failure. */
+/** @file Single-attempt upstream EAS operations; inert status readers and publishers preserve project identity. */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -86,6 +86,7 @@ export function verifyBuild(build, plan, target) {
 
 /**
  * Enqueue exactly once per run and wait using public read commands; errors do not retry within this run.
+ * Status reads use an inert project, so monorepos need no root Expo config and reads never evaluate source.
  * EAS Build evaluates the consumer's source configuration with EXPO_TOKEN for existing
  * EAS-managed credentials. This authenticated evaluation is the explicit exception to
  * source-only execution; privileged submit/update publishers instead use inert projects.
@@ -98,14 +99,16 @@ export async function cloudBuild(root, plan, target, command = eas) {
   assert(Array.isArray(result) && result.length === 1 && result[0].id, 'EAS build acceptance is uncertain; this run cannot confirm success.');
   const id = result[0].id;
   console.error(`EAS build ${id}`);
-  let build = result[0];
-  for (let attempt = 0; attempt < 480; attempt++) {
-    build = command(['build:view', id, '--json'], root);
-    if (build.status === 'FINISHED') return verifyBuild(build, plan, target);
-    assert(!['ERRORED', 'CANCELED'].includes(build.status), `EAS build ${id} ${build.status}; a fresh release may proceed.`);
-    await delay(15000);
-  }
-  throw new Error(`EAS build ${id} is still pending; a fresh release may create a redundant build.`);
+  const inert = publisher(plan.config, plan.profile);
+  try {
+    for (let attempt = 0; attempt < 480; attempt++) {
+      const build = command(['build:view', id, '--json'], inert);
+      if (build.status === 'FINISHED') return verifyBuild(build, plan, target);
+      assert(!['ERRORED', 'CANCELED'].includes(build.status), `EAS build ${id} ${build.status}; a fresh release may proceed.`);
+      await delay(15000);
+    }
+    throw new Error(`EAS build ${id} is still pending; a fresh release may create a redundant build.`);
+  } finally { fs.rmSync(inert, { recursive: true, force: true }); }
 }
 
 /** Extract the exact project's submission ID from the CLI's documented provider URL. */
