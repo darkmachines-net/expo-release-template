@@ -1,15 +1,26 @@
-/** @file Immutable reservations and receipts let GitHub job retries reuse confirmed release operations. */
+/** @file Immutable release evidence with bounded read retries; provider writes remain single-attempt. */
+import { setTimeout as delay } from 'node:timers/promises';
 import { assert, compareVersions } from './engine.mjs';
 import { hash } from './io.mjs';
 const prefix = 'expo-release/v3/';
 
-/** Create an authenticated GitHub client; writes are single-attempt and never automatically retried. */
-export function github(repository, { token = process.env.GITHUB_TOKEN, fetcher = fetch } = {}) {
+/** Create an authenticated client with transient GET retries; writes are never automatically retried. */
+export function github(repository, { token = process.env.GITHUB_TOKEN, fetcher = fetch, wait = delay } = {}) {
   const base = `https://api.github.com/repos/${repository}`;
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
-  /** Read JSON (including asset downloads); only explicitly optional GETs treat 404 as absent. Never retry writes. */
+  /** Retry transport/5xx read failures twice; only explicitly optional GETs treat 404 as absent. */
   const api = async (method, route, body, { optional = false, binary = false } = {}) => {
-    const response = await fetcher(`${base}/${route}`, { method, headers: { ...headers, ...(binary ? { Accept: 'application/octet-stream' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    let response;
+    for (let attempt = 0; ; attempt++) {
+      try { response = await fetcher(`${base}/${route}`, { method, headers: { ...headers, ...(binary ? { Accept: 'application/octet-stream' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }); }
+      catch (error) {
+        if (method !== 'GET' || attempt === 2) throw new Error(`GitHub ${method} ${route.split('?')[0]}: ${error.message}`, { cause: error });
+      }
+      if (response && (response.status < 500 || method !== 'GET' || attempt === 2)) break;
+      await response?.body?.cancel();
+      await wait(1000 * 2 ** attempt);
+      response = undefined;
+    }
     if (method === 'GET' && optional && response.status === 404) return null;
     assert(response.ok, `GitHub ${method} ${route.split('?')[0]} failed (${response.status}); this run does not retry writes.`);
     return response.status === 204 ? null : response.json();

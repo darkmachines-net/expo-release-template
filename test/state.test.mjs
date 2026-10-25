@@ -1,8 +1,9 @@
-/** @file Fresh releases survive prior failures while reservations, successful baselines and job retries reuse confirmed operations. */
+/** @file Immutable release retries, independent baselines and bounded GitHub reads without repeated writes. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { github, historyFrom, reserve, begin, complete, operationPayload, loadHistory, perform, receipt } from '../src/github.mjs';
 import { selectRelease } from '../src/engine.mjs';
+import { submit } from '../src/eas.mjs';
 import { plan, observation } from './helpers.mjs';
 
 /** Deterministic GitHub API stand-in which records ordering without networking. */
@@ -230,6 +231,38 @@ test('transport never retries writes or interprets permission failure as absence
   await assert.rejects(api.pages('deployments'), /403/); assert.equal(requests, 2);
 });
 
+test('transient GitHub reads retry twice while writes and authorization failures remain single-attempt', async () => {
+  for (const failure of ['network', 503, 403]) for (const method of ['GET', 'POST']) {
+    let requests = 0; const waits = [];
+    const api = github('owner/app', { token: 'test',
+      /** Keep retry timing observable without sleeping. */
+      wait: async ms => { waits.push(ms); },
+      /** Fail transient reads twice; a write must never reach the third request. */
+      fetcher: async () => {
+        requests++;
+        if (requests === 3) return { ok: true, status: 200,
+          /** Supply the successful read after transient failures. */
+          json: async () => ({ saved: true }) };
+        if (failure === 'network') throw new Error('fetch failed');
+        return { ok: false, status: failure };
+      } });
+    if (method === 'GET' && failure !== 403) {
+      assert.deepEqual(await api.api(method, 'releases/42'), { saved: true }); assert.deepEqual(waits, [1000, 2000]);
+    } else {
+      await assert.rejects(api.api(method, 'releases/42'), /GitHub (GET|POST) releases\/42/);
+      assert.equal(requests, 1); assert.deepEqual(waits, []);
+    }
+  }
+  let requests = 0;
+  const unavailable = github('owner/app', {
+    /** Persistent failure must remain bounded. */
+    fetcher: async () => { requests++; throw new Error('offline'); },
+    /** Avoid real retry delays in the test. */
+    wait: async () => {} });
+  await assert.rejects(unavailable.api('GET', 'releases/42'), /GitHub GET releases\/42: offline/);
+  assert.equal(requests, 3);
+});
+
 test('pagination reads beyond the first page and evidence conflicts are errors', async () => {
   const api = github('owner/app', { token: 'test',
     /** Supply two history pages and reject evidence writes to exercise immutable asset conflicts. */
@@ -305,6 +338,31 @@ test('provider success retained before a status failure is repaired without anot
   await perform(fake, value, 'deploy/server', () => { requests++; });
   assert.equal(requests, 1);
   assert.equal(fake.calls.at(-1)[2].state, 'success');
+});
+
+test('EAS success followed by a lost GitHub receipt is reconciled on retry without resubmission', async t => {
+  const value = plan(), target = value.config.mobile.targets[0]; let fail = true, writes = 0;
+  const fake = client({
+    /** Lose the GitHub receipt after EAS has finished. */
+    failAt: method => method === 'evidence' && fail });
+  const record = { id: '12345678-1234-1234-1234-123456789012', status: 'FINISHED', platform: 'ANDROID', app: { id: value.config.mobile.projectId },
+    androidConfig: { track: 'internal', releaseStatus: 'COMPLETED' }, submittedBuild: { id: 'provider-id', status: 'FINISHED', app: { id: value.config.mobile.projectId },
+      appIdentifier: target.applicationId, platform: 'ANDROID', gitCommitHash: value.build, buildProfile: 'production', appVersion: value.versions.mobile,
+      runtime: { version: value.runtime }, updateChannel: { name: 'production' }, fingerprint: { hash: value.observation.fingerprints.production.android } } };
+  /** Persist the provider operation independently of GitHub's receipt write. */
+  const command = args => {
+    if (args[0] === 'submit:list') return writes ? [record] : [];
+    if (args[0] === 'submit:view') return record;
+    assert.equal(args[0], 'submit'); writes++;
+    return `https://expo.dev/accounts/owner/projects/app/submissions/${record.id}`;
+  };
+  /** Exercise the real worker's operation/adapter boundary without live providers. */
+  const attempt = () => perform(fake, value, 'submit/android', () => submit(value, target, { buildId: 'provider-id' }, value.submitProfiles, command));
+  setAttempt(t, '1'); await assert.rejects(attempt(), /connection lost/);
+  assert.equal(fake.assets.has('submit-android.json'), false);
+  fail = false; setAttempt(t, '2'); await attempt(); await attempt();
+  assert.equal(writes, 1); assert.equal(fake.assets.get('submit-android.json').result.id, record.id);
+  assert.equal(fake.calls.at(-1)[0], 'GET');
 });
 
 test('native recording is idempotent when a sibling platform is completed on a later attempt', async () => {
