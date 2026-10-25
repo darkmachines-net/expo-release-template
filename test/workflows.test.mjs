@@ -1,4 +1,4 @@
-/** @file Check actual workflow dependencies, permission boundaries and supported upstream setup. */
+/** @file Check fixed workflow ordering, retry artifact reuse, credential boundaries and upstream setup. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -28,6 +28,7 @@ test('reservation precedes every build and external operation', () => {
   assert.ok(needs('server-publish').includes('server-build'));
   assert.ok(needs('server-deploy').includes('server-publish'));
   assert.ok(needs('native-build').includes('native-start'));
+  assert.match(jobs['native-build'].if, /always\(\).*needs.native-start.result == 'success'/);
   assert.ok(needs('native-start').includes('server-deploy'));
   assert.match(jobs['native-start'].if, /server != 'true'.*server-deploy.result == 'success'/);
 });
@@ -80,9 +81,26 @@ test('publishers do not install or execute application dependencies', () => {
 });
 
 test('all artifacts are current-run downloads without arbitrary run or repository inputs', () => {
-  for (const job of Object.values(jobs)) for (const step of job.steps) if (step.uses?.includes('download-artifact')) {
+  for (const job of [...Object.values(jobs), { steps: setup.runs.steps }]) for (const step of job.steps) if (step.uses?.includes('download-artifact')) {
     for (const key of ['run-id','repository','github-token']) assert.equal(step.with?.[key], undefined);
   }
+});
+
+test('rerun producers restore their own completed artifacts and never overwrite successful output', () => {
+  for (const name of ['context', 'environment', 'prepare', 'native-start', 'native-build', 'server-build', 'ota-export']) {
+    const steps = jobs[name].steps;
+    const upload = steps.find(step => step.uses?.includes('upload-artifact'));
+    const restore = steps.find(step => step.uses === './.toolkit/.github/actions/setup');
+    assert.equal(restore.with.reuse, upload.with.name);
+    assert.equal(restore.with.directory ?? 'state', upload.with.path === 'state/native-intents.json' ? 'state' : upload.with.path);
+    assert.equal(upload.if, "env.RELEASE_REUSE != 'true'");
+    assert.equal(upload.with.overwrite, undefined);
+  }
+  const restore = setup.runs.steps.find(step => step.id === 'reuse');
+  assert.match(restore.if, /github.run_attempt > 1/);
+  assert.equal(restore['continue-on-error'], true);
+  assert.equal(restore.with.path, '.release-restored');
+  assert.ok(setup.runs.steps.some(step => step.run?.includes('cp -a .release-restored/.')));
 });
 
 test('upstream setup uses a full action SHA and a pinned EAS version before credentials', () => {

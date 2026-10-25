@@ -1,14 +1,16 @@
-/** @file Immutable reservations and successful target baselines; operation attempts guard only against same-run duplicates. */
+/** @file Immutable reservations and receipts let GitHub job retries reuse confirmed release operations. */
 import { assert, compareVersions } from './engine.mjs';
+import { hash } from './io.mjs';
 const prefix = 'expo-release/v3/';
 
 /** Create an authenticated GitHub client; writes are single-attempt and never automatically retried. */
 export function github(repository, { token = process.env.GITHUB_TOKEN, fetcher = fetch } = {}) {
   const base = `https://api.github.com/repos/${repository}`;
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
-  /** Send one repository-relative API request; return parsed JSON or null for HTTP 204. Never retry writes. */
-  const api = async (method, route, body) => {
-    const response = await fetcher(`${base}/${route}`, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
+  /** Read JSON (including asset downloads); only explicitly optional GETs treat 404 as absent. Never retry writes. */
+  const api = async (method, route, body, { optional = false, binary = false } = {}) => {
+    const response = await fetcher(`${base}/${route}`, { method, headers: { ...headers, ...(binary ? { Accept: 'application/octet-stream' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    if (method === 'GET' && optional && response.status === 404) return null;
     assert(response.ok, `GitHub ${method} ${route.split('?')[0]} failed (${response.status}); this run does not retry writes.`);
     return response.status === 204 ? null : response.json();
   };
@@ -24,8 +26,16 @@ export function github(repository, { token = process.env.GITHUB_TOKEN, fetcher =
     throw new Error('Release history exceeds the supported GitHub pagination bound.');
   };
   return { api, pages,
-    /** Upload a new evidence asset; duplicate names fail rather than replacing prior evidence. */
+    /** Read one immutable JSON asset; missing assets are distinct from failed or unauthorized reads. */
+    async readEvidence(releaseId, name) {
+      const assets = await pages(`releases/${releaseId}/assets`);
+      const asset = assets.find(value => value.name === name);
+      return asset ? api('GET', `releases/assets/${asset.id}`, undefined, { binary: true }) : null;
+    },
+    /** Retain JSON once; identical uploads are already complete and conflicting bytes are rejected. */
     async evidence(releaseId, name, value) {
+      const saved = await this.readEvidence(releaseId, name);
+      if (saved !== null) { assert(hash(saved) === hash(value), `Conflicting immutable evidence: ${name}.`); return; }
       const response = await fetcher(`https://uploads.github.com/repos/${repository}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`,
         { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
       assert(response.ok, `Cannot retain release evidence (${response.status}); this run cannot confirm success.`);
@@ -75,7 +85,7 @@ export async function loadHistory(client) {
   return historyFrom(records, deployments);
 }
 
-/** Reserve tags and an evidence container before any provider request; never replace existing refs. */
+/** Finish a possibly interrupted reservation, accepting only identical existing tags and plan evidence. */
 export async function reserve(client, plan) {
   const record = { format: 3, source: plan.source, build: plan.build, run: plan.run, toolkit: plan.toolkit,
     versions: plan.versions, family: plan.observation.family, pairCodeFloor: plan.pair?.[1] ?? 0 };
@@ -83,10 +93,17 @@ export async function reserve(client, plan) {
     ...(plan.bump ? [`${prefix}mobile/v${plan.versions.mobile}`] : []),
     ...(plan.server ? [`${prefix}server/v${plan.versions.server}`] : [])];
   for (const name of names) {
+    const existing = await client.api('GET', `git/ref/tags/${name}`, undefined, { optional: true });
+    if (existing) {
+      assert(existing.object.type === 'tag', 'Reservation is not an annotated tag.');
+      const saved = await client.api('GET', `git/tags/${existing.object.sha}`);
+      assert(saved.object.sha === plan.build && hash(JSON.parse(saved.message)) === hash(record), 'Conflicting release reservation.');
+      continue;
+    }
     const tag = await client.api('POST', 'git/tags', { tag: name, message: JSON.stringify(record), object: plan.build, type: 'commit' });
     await client.api('POST', 'git/refs', { ref: `refs/tags/${name}`, sha: tag.sha });
   }
-  const release = await client.api('POST', 'releases', { tag_name: names[0], name: `Release ${plan.versions.mobile ?? plan.versions.server} · ${plan.profile}`,
+  const release = await client.api('GET', `releases/tags/${names[0]}`, undefined, { optional: true }) ?? await client.api('POST', 'releases', { tag_name: names[0], name: `Release ${plan.versions.mobile ?? plan.versions.server} · ${plan.profile}`,
     body: `Source: ${plan.source}\nBuild: ${plan.build}\nRun: https://github.com/${plan.repository}/actions/runs/${plan.run}`,
     draft: false, prerelease: true, make_latest: 'false' });
   await client.evidence(release.id, 'plan.json', plan);
@@ -106,26 +123,56 @@ export function operationPayload(plan, operation) {
     destination: id === 'server' ? plan.config.server.image : target?.applicationId ?? plan.config.profiles[plan.profile].channel };
 }
 
-/** Record intent before calling a provider once per run/operation; prior runs never prevent a fresh request. */
-export async function begin(client, plan, operation) {
+/** Record intent once per workflow attempt; only a later explicit job retry may repeat unconfirmed work. */
+export async function begin(client, plan, operation, attempt = process.env.GITHUB_RUN_ATTEMPT || '1') {
   const payload = operationPayload(plan, operation);
   const previous = await client.pages('deployments?task=expo-release-v3');
   for (const deployment of previous) {
     if (deployment.payload?.run !== plan.run) continue;
     assert(typeof deployment.payload?.key === 'string', 'Malformed operation identity; resolve its evidence before continuing.');
-    assert(!deployment.payload.key.endsWith(`/${operation}`),
-      `Operation ${payload.key} was already attempted in this run; start a fresh release instead of retrying this request.`);
+    if (!deployment.payload.key.endsWith(`/${operation}`)) continue;
+    const { attempt: previousAttempt = '1', ...identity } = deployment.payload;
+    assert(hash(identity) === hash(payload), 'Operation identity differs from the release plan.');
+    assert(Number(previousAttempt) < Number(attempt), `Operation ${payload.key} was already attempted in this workflow attempt.`);
+    const statuses = await client.api('GET', `deployments/${deployment.id}/statuses?per_page=1`);
+    assert(statuses[0]?.state !== 'success', 'Successful operation is missing its immutable evidence.');
   }
   const deployment = await client.api('POST', 'deployments', { ref: plan.build, task: 'expo-release-v3', auto_merge: false,
-    required_contexts: [], environment: payload.key, production_environment: plan.config.profiles[plan.profile].environment === 'production', payload });
+    required_contexts: [], environment: payload.key, production_environment: plan.config.profiles[plan.profile].environment === 'production', payload: { ...payload, attempt } });
   assert(Number.isSafeInteger(deployment.id), 'GitHub did not return a deployment ID.');
   return deployment.id;
 }
 
-/** Retain evidence before marking success; missing acknowledgement leaves the last successful baseline intact. */
+/** Read a confirmed provider result, checking the complete plan and operation identity before reuse. */
+export async function receipt(client, plan, operation) {
+  const release = await client.api('GET', `releases/tags/${prefix}run/${plan.run}`);
+  const saved = await client.readEvidence(release.id, `${operation.replaceAll('/', '-')}.json`);
+  if (saved) {
+    const { deploymentId, result, plan: digest, ...identity } = saved;
+    assert(Number.isSafeInteger(deploymentId) && result && digest === hash(plan)
+      && hash(identity) === hash(operationPayload(plan, operation)), 'Release receipt identity differs from the plan.');
+  }
+  return saved;
+}
+
+/** Skip confirmed work on retry, repairing an interrupted success record before returning its result. */
+export async function perform(client, plan, operation, execute) {
+  const saved = await receipt(client, plan, operation);
+  const id = saved?.deploymentId ?? await begin(client, plan, operation);
+  const result = saved?.result ?? await execute();
+  await complete(client, plan, operation, id, result);
+  return result;
+}
+
+/** Retain evidence before marking success; retries repair status without replacing the original receipt. */
 export async function complete(client, plan, operation, deploymentId, result) {
   const release = await client.api('GET', `releases/tags/${prefix}run/${plan.run}`);
-  await client.evidence(release.id, `${operation.replaceAll('/', '-')}.json`, { ...operationPayload(plan, operation), deploymentId, result });
-  await client.api('POST', `deployments/${deploymentId}/statuses`, { state: 'success', auto_inactive: false,
+  const saved = await receipt(client, plan, operation);
+  if (saved) {
+    assert(result.id ? saved.result.id === result.id : hash(saved.result) === hash(result), 'Provider result conflicts with confirmed evidence.');
+    deploymentId = saved.deploymentId;
+  } else await client.evidence(release.id, `${operation.replaceAll('/', '-')}.json`, { ...operationPayload(plan, operation), plan: hash(plan), deploymentId, result });
+  const statuses = await client.api('GET', `deployments/${deploymentId}/statuses?per_page=1`);
+  if (statuses[0]?.state !== 'success') await client.api('POST', `deployments/${deploymentId}/statuses`, { state: 'success', auto_inactive: false,
     log_url: `https://github.com/${plan.repository}/actions/runs/${plan.run}`, description: 'Provider operation completed; immutable evidence retained.' });
 }

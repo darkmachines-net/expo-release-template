@@ -1,27 +1,54 @@
-/** @file Fresh releases survive prior failures while reservations, successful baselines and same-run duplicate guards remain intact. */
+/** @file Fresh releases survive prior failures while reservations, successful baselines and job retries reuse confirmed operations. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { github, historyFrom, reserve, begin, complete, operationPayload, loadHistory } from '../src/github.mjs';
+import { github, historyFrom, reserve, begin, complete, operationPayload, loadHistory, perform, receipt } from '../src/github.mjs';
 import { selectRelease } from '../src/engine.mjs';
 import { plan, observation } from './helpers.mjs';
 
 /** Deterministic GitHub API stand-in which records ordering without networking. */
 function client({ deployments = [], states = {}, failAt } = {}) {
-  const calls = [];
-  return { calls,
-    /** Return the supplied deployment history and record the requested list route. */
+  deployments = structuredClone(deployments); states = { ...states };
+  const calls = [], assets = new Map(), refs = new Map(), tags = new Map();
+  let next = 42, release;
+  return { calls, assets, deployments,
+    /** Return independent persistent deployment history. */
     async pages(route) { calls.push(['pages', route]); return deployments; },
-    /** Return deterministic IDs/statuses or inject a lost connection at the selected write. */
-    async api(method, route, body) {
+    /** Persist tags, deployments and success statuses across simulated workflow attempts. */
+    async api(method, route, body, options = {}) {
       calls.push([method, route, body]);
       if (failAt?.(method, route)) throw new Error('connection lost');
       if (route.includes('/statuses?')) return states[route.split('/')[1]] === undefined ? [] : [{ state: states[route.split('/')[1]] }];
-      if (route === 'git/tags') return { sha: 'd'.repeat(40) };
-      return { id: 42 };
+      if (route.endsWith('/statuses')) { states[route.split('/')[1]] = body.state; return {}; }
+      if (method === 'GET' && route.startsWith('git/ref/')) return refs.get(route.slice(8)) ?? null;
+      if (method === 'GET' && route.startsWith('git/tags/')) return tags.get(route.slice(9));
+      if (route === 'git/tags') { const sha = String(next++).padStart(40, '0'); tags.set(sha, { message: body.message, object: { sha: body.object } }); return { sha }; }
+      if (route === 'git/refs') { refs.set(body.ref.slice(5), { object: { type: 'tag', sha: body.sha } }); return {}; }
+      if (route === 'releases') { release = { id: 42 }; return release; }
+      if (route.startsWith('releases/tags/')) return release ?? (options.optional ? null : { id: 42 });
+      if (route === 'deployments') { const deployment = { id: next++, payload: body.payload }; deployments.unshift(deployment); return deployment; }
+      throw new Error('Unexpected API route: ' + route);
     },
-    /** Capture evidence ordering and optionally simulate an upload with unknown outcome. */
-    async evidence(id, name, body) { calls.push(['evidence', id, name, body]); if (failAt?.('evidence', name)) throw new Error('connection lost'); }
+    /** Return immutable evidence saved by an earlier attempt. */
+    async readEvidence(id, name) { return assets.get(name) ?? null; },
+    /** Persist evidence without replacing previously confirmed results. */
+    async evidence(id, name, body) {
+      calls.push(['evidence', id, name, body]);
+      if (failAt?.('evidence', name)) throw new Error('connection lost');
+      if (assets.has(name)) assert.deepEqual(assets.get(name), body);
+      else assets.set(name, structuredClone(body));
+    }
   };
+}
+
+const changedEnvironment = new WeakSet();
+/** Set a workflow attempt for one test and restore the caller's environment afterward. */
+function setAttempt(t, value) {
+  if (!changedEnvironment.has(t)) {
+    changedEnvironment.add(t);
+    const original = process.env.GITHUB_RUN_ATTEMPT;
+    t.after(() => { if (original === undefined) delete process.env.GITHUB_RUN_ATTEMPT; else process.env.GITHUB_RUN_ATTEMPT = original; });
+  }
+  process.env.GITHUB_RUN_ATTEMPT = value;
 }
 
 test('reservation writes immutable annotated tags before evidence', async () => {
@@ -32,7 +59,7 @@ test('reservation writes immutable annotated tags before evidence', async () => 
   ]);
   assert.equal(fake.calls.at(-1)[0], 'evidence'); assert.equal(fake.calls.at(-1)[2], 'plan.json');
   assert.equal(fake.calls.filter(call => call[0] === 'PATCH').length, 0);
-  const tag = JSON.parse(fake.calls[0][2].message);
+  const tag = JSON.parse(fake.calls.find(([method, route]) => method === 'POST' && route === 'git/tags')[2].message);
   assert.equal(tag.build, value.build); assert.equal(tag.family, value.observation.family);
 });
 
@@ -117,15 +144,15 @@ test('every prior outcome permits a fresh operation without inspecting or rewrit
 
 test('same-run duplicate is rejected for every outcome, including a missing acknowledgement', async () => {
   for (const state of [undefined, 'pending', 'in_progress', 'queued', 'failure', 'error', 'inactive', 'success']) {
-    const fake = client({ deployments: [{ id: 9, payload: { key: 'production/ota/android', run: '123' } }], states: { 9: state } });
-    await assert.rejects(begin(fake, plan(), 'ota/android'), /already attempted in this run/);
+    const fake = client({ deployments: [{ id: 9, payload: operationPayload(plan(), 'ota/android') }], states: { 9: state } });
+    await assert.rejects(begin(fake, plan(), 'ota/android'), /already attempted in this workflow attempt/);
     assert.equal(fake.calls.filter(call => call[0] === 'POST').length, 0);
   }
 });
 
 test('immutable evidence precedes success and failure leaves the intent outstanding', async () => {
   const fake = client(); await complete(fake, plan(), 'ota/ios', 77, { id: 'provider' });
-  assert.deepEqual(fake.calls.map(call => call[0]), ['GET', 'evidence', 'POST']);
+  assert.deepEqual(fake.calls.filter(call => ['evidence', 'POST'].includes(call[0])).map(call => call[0]), ['evidence', 'POST']);
   assert.equal(fake.calls.at(-1)[2].auto_inactive, false);
   const failed = client({
     /** Fail evidence retention so success cannot be recorded. */
@@ -138,8 +165,8 @@ test('immutable evidence precedes success and failure leaves the intent outstand
 test('old profile attempts do not block a fresh run but a same-run profile change cannot duplicate an operation', async () => {
   const fake = client({ deployments: [{ id: 9, payload: { key: 'internal/publish/server', run: 'older' } }] });
   assert.equal(await begin(fake, plan(), 'publish/server'), 42);
-  assert.equal(await begin(fake, plan(), 'ota/android'), 42);
-  await assert.rejects(begin(fake, plan({ run: 'older' }), 'publish/server'), /already attempted in this run/);
+  assert.equal(await begin(fake, plan(), 'ota/android'), 43);
+  await assert.rejects(begin(fake, plan({ run: 'older' }), 'publish/server'), /identity differs/);
 });
 
 test('partial failures consume reservations while fresh mixed releases use only confirmed target baselines', async () => {
@@ -160,7 +187,7 @@ test('partial failures consume reservations while fresh mixed releases use only 
     const fake = client({ deployments: failed, states: { 9: state } });
     const next = { ...old, ...selection, run: '124' };
     assert.equal(await begin(fake, next, 'publish/server'), 42);
-    assert.equal(await begin(fake, next, 'ota/android'), 42);
+    assert.equal(await begin(fake, next, 'ota/android'), 43);
     assert.ok(fake.calls.filter(call => call[0] === 'POST').every(call => call[2].payload.run === '124'));
   }
 });
@@ -216,4 +243,112 @@ test('pagination reads beyond the first page and evidence conflicts are errors',
   });
   assert.equal((await api.pages('deployments')).length, 101);
   await assert.rejects(api.evidence(1, 'plan.json', {}), /422/);
+});
+
+test('repeated and interrupted reservations retain the original versions, build and evidence', async () => {
+  let fail = true;
+  const fake = client({
+    /** Interrupt reservation evidence after all tags exist. */
+    failAt: (method, route) => method === 'evidence' && route === 'plan.json' && fail });
+  const value = plan();
+  await assert.rejects(reserve(fake, value), /connection lost/);
+  fail = false; await reserve(fake, value); await reserve(fake, value);
+  assert.equal(fake.calls.filter(([method, route]) => method === 'POST' && route === 'git/refs').length, 3);
+  assert.equal(fake.calls.filter(([method, route]) => method === 'POST' && route === 'releases').length, 1);
+  assert.deepEqual(fake.assets.get('plan.json'), value);
+  await assert.rejects(reserve(fake, { ...value, build: 'e'.repeat(40) }), /Conflicting/);
+});
+
+test('a later explicit attempt can retry unconfirmed work but cannot repeat a confirmed operation', async t => {
+  setAttempt(t, '1');
+  for (const operation of ['publish/server', 'deploy/server', 'submit/android', 'submit/ios', 'ota/android']) {
+    const fake = client(), value = plan(); let requests = 0;
+    await assert.rejects(perform(fake, value, operation, () => { requests++; throw new Error('provider unavailable'); }));
+    await assert.rejects(perform(fake, value, operation, () => { requests++; }), /already attempted/);
+    setAttempt(t, '2');
+    await perform(fake, value, operation, () => { requests++; return { id: 'confirmed' }; });
+    await perform(fake, value, operation, () => { throw new Error('successful provider request repeated'); });
+    assert.equal(requests, 2);
+    assert.equal(fake.deployments.length, 2);
+    setAttempt(t, '1');
+  }
+});
+
+test('Android success survives iOS failure and a retry submits only iOS with the same plan', async t => {
+  setAttempt(t, '1');
+  const fake = client(), value = plan(), requests = [];
+  /** Model a real two-platform submission job that stops when the second platform fails. */
+  const submit = async fail => {
+    for (const platform of ['android', 'ios']) await perform(fake, value, `submit/${platform}`, () => {
+      requests.push(platform);
+      if (fail && platform === 'ios') throw new Error('iOS credentials');
+      return { id: `${platform}-submission`, destination: value.submitProfiles.production[platform] };
+    });
+  };
+  await assert.rejects(submit(true), /iOS credentials/);
+  const android = structuredClone(fake.assets.get('submit-android.json'));
+  setAttempt(t, '2'); await submit(false);
+  assert.deepEqual(requests, ['android', 'ios', 'ios']);
+  assert.deepEqual(fake.assets.get('submit-android.json'), android);
+  assert.equal(fake.assets.get('submit-ios.json').build, value.build);
+  assert.equal(fake.assets.get('submit-ios.json').version, value.versions.mobile);
+});
+
+test('provider success retained before a status failure is repaired without another provider request', async () => {
+  let fail = true, requests = 0;
+  const fake = client({
+    /** Lose the status write after successful provider evidence is durable. */
+    failAt: (method, route) => method === 'POST' && route.endsWith('/statuses') && fail });
+  const value = plan();
+  await assert.rejects(perform(fake, value, 'deploy/server', () => { requests++; return { healthy: true }; }), /connection lost/);
+  fail = false;
+  await perform(fake, value, 'deploy/server', () => { requests++; });
+  assert.equal(requests, 1);
+  assert.equal(fake.calls.at(-1)[2].state, 'success');
+});
+
+test('native recording is idempotent when a sibling platform is completed on a later attempt', async () => {
+  const fake = client(), value = plan();
+  await complete(fake, value, 'build/android', 12, { id: 'android-build', updatedAt: 'earlier' });
+  await complete(fake, value, 'build/android', 12, { id: 'android-build', updatedAt: 'later' });
+  await complete(fake, value, 'build/ios', 13, { id: 'ios-build' });
+  assert.equal(fake.calls.filter(call => call[0] === 'evidence').length, 2);
+  assert.equal(fake.calls.filter(call => call[0] === 'POST').length, 2);
+  await assert.rejects(complete(fake, value, 'build/android', 12, { id: 'another-build' }), /conflicts/);
+});
+
+test('receipt identity, destination or plan tampering never authorizes reuse or another request', async () => {
+  const value = plan(), fake = client();
+  await perform(fake, value, 'submit/ios', () => ({ id: 'submission' }));
+  const saved = fake.assets.get('submit-ios.json');
+  for (const changed of [{ run: '124' }, { source: value.build }, { destination: 'other.app' }, { plan: 'wrong' }, { toolkit: 'local' }]) {
+    fake.assets.set('submit-ios.json', { ...saved, ...changed });
+    await assert.rejects(perform(fake, value, 'submit/ios', () => { throw new Error('provider called'); }), /identity/);
+  }
+  fake.assets.set('submit-ios.json', saved);
+  await assert.rejects(receipt(fake, { ...value, submitProfiles: {} }, 'submit/ios'), /identity/);
+  fake.assets.delete('submit-ios.json');
+  await assert.rejects(begin(fake, value, 'submit/ios', '2'), /Successful operation is missing/);
+});
+
+test('evidence writes reuse identical bytes, reject conflicts and distinguish 404 from denied reads', async () => {
+  const saved = { plan: 'immutable' }; let uploads = 0;
+  const api = github('owner/app', { token: 'test',
+    /** Serve one existing immutable asset and count accidental replacement requests. */
+    fetcher: async (url, options) => {
+    if (options.method === 'POST') uploads++;
+    return { ok: true, status: 200,
+      /** Return asset metadata or its original contents. */
+      json: async () => url.includes('/assets?') ? [{ id: 9, name: 'plan.json' }] : saved };
+  } });
+  await api.evidence(42, 'plan.json', saved);
+  await assert.rejects(api.evidence(42, 'plan.json', { plan: 'changed' }), /Conflicting/);
+  assert.equal(uploads, 0);
+  for (const status of [404, 403, 500]) {
+    const missing = github('owner/app', {
+      /** Simulate absent, forbidden and unavailable GitHub resources independently. */
+      fetcher: async () => ({ ok: false, status }) });
+    if (status === 404) assert.equal(await missing.api('GET', 'git/ref/missing', undefined, { optional: true }), null);
+    else await assert.rejects(missing.api('GET', 'git/ref/missing', undefined, { optional: true }), new RegExp(String(status)));
+  }
 });

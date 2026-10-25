@@ -1,11 +1,11 @@
-/** @file Fixed GitHub job entrypoints; the workflow, not a dynamic stage engine, defines execution order. */
+/** @file Fixed GitHub jobs resume immutable plans and reuse confirmed operations on explicit job retries. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { assert } from './engine.mjs';
 import { loadConfig, verifyPins, verifyPlan } from './consumer/config.mjs';
 import { git, run, readJson, writeJson, sourceEnvironment, seal, verify, hash } from './io.mjs';
 import { prepare, hook, exportBundle } from './consumer/source.mjs';
-import { github, loadHistory, reserve, begin, complete } from './github.mjs';
+import { github, loadHistory, reserve, begin, complete, perform, receipt } from './github.mjs';
 import { eas, publisher, readEnvironments, verifyBuildFloors, cloudBuild, verifyBuild, submit, update } from './eas.mjs';
 import { buildServer, commandBuild } from './build.mjs';
 import { connectAndDeploy } from './deploy.mjs';
@@ -21,9 +21,22 @@ export function output(key, value) {
 export function hostedIdentity(config, env = process.env) {
   assert(env.GITHUB_EVENT_NAME === 'workflow_dispatch' && env.GITHUB_REF === `refs/heads/${config.defaultBranch}`
     && env.GITHUB_REPOSITORY === config.repository && /^[a-f0-9]{40}$/.test(env.GITHUB_SHA ?? '')
-    && /^[a-f0-9]{40}$/.test(env.TOOLKIT_SHA ?? '') && /^\d+$/.test(env.GITHUB_RUN_ID ?? '') && env.GITHUB_RUN_ATTEMPT === '1',
-    'Release requires a fresh default-branch dispatch; job retries and other events cannot publish.');
+    && /^[a-f0-9]{40}$/.test(env.TOOLKIT_SHA ?? '') && /^\d+$/.test(env.GITHUB_RUN_ID ?? '') && /^[1-9]\d*$/.test(env.GITHUB_RUN_ATTEMPT ?? ''),
+    'Release requires a protected default-branch dispatch or its job retries.');
   return { repository: config.repository, source: env.GITHUB_SHA, toolkit: env.TOOLKIT_SHA, run: env.GITHUB_RUN_ID };
+}
+
+/** Select completed native artifacts, rejecting partial/tampered bundles and an entirely missing build set. */
+export function nativeArtifacts(plan, artifacts) {
+  const targets = plan.config.mobile.targets.filter(target => {
+    const directory = path.join(artifacts, target.id);
+    if (!fs.existsSync(directory) && !fs.existsSync(`${directory}.json`)) return false;
+    verify(directory, plan, target.id);
+    return true;
+  });
+  assert(targets.length, 'No completed native build artifacts were downloaded; retry the native-build job before submission.');
+  assert(plan.config.mobile.builder !== 'command' || targets.length === plan.config.mobile.targets.length, 'Paired native artifacts are incomplete.');
+  return targets;
 }
 
 /** Execute a single internal workflow phase with an explicit checkout and artifact directory. */
@@ -32,16 +45,20 @@ export async function worker(phase, root, state) {
   const client = github(config.repository), contextFile = path.join(state, 'context.json'), planFile = path.join(state, 'plan.json');
   const profile = process.env.RELEASE_PROFILE, targetId = process.env.RELEASE_TARGET;
   const artifacts = path.resolve('artifacts');
+  const reused = process.env.RELEASE_REUSE === 'true';
   if (phase === 'context') {
     verifyPins(root, identity.toolkit);
     assert(config.profiles[profile], 'Unknown profile.');
     const selected = config.profiles[profile];
-    writeJson(contextFile, { ...identity, history: await loadHistory(client), config });
+    if (!reused) writeJson(contextFile, { ...identity, history: await loadHistory(client), config });
+    const saved = readJson(contextFile);
+    assert(Object.entries(identity).every(([key, value]) => saved[key] === value) && hash(saved.config) === hash(config), 'Restored context identity differs.');
     for (const [key, value] of Object.entries({ mobile: !!config.mobile, approval: selected.approvalEnvironment,
       signing: selected.signingEnvironment || selected.approvalEnvironment, submit_environment: selected.submitEnvironment || selected.approvalEnvironment,
       deploy_environment: selected.deployEnvironment, builder: config.mobile?.builder ?? 'eas' })) output(key, value);
     return;
   }
+  if (reused && phase !== 'prepare') return;
   if (phase === 'environment') {
     verifyBuildFloors(config);
     const context = readJson(contextFile); context.environments = readEnvironments(config); writeJson(contextFile, context); return;
@@ -51,8 +68,9 @@ export async function worker(phase, root, state) {
     return;
   }
   if (phase === 'prepare') {
-    const plan = prepare(root, config, readJson(contextFile), profile, process.env.RELEASE_REBUILD === 'true');
-    if (!plan.noop) {
+    const plan = reused ? readJson(planFile) : prepare(root, config, readJson(contextFile), profile, process.env.RELEASE_REBUILD === 'true');
+    if (reused) verifyPlan(plan, config, identity);
+    if (!plan.noop && !reused) {
       if (config.mobile) {
         const easConfig = readJson(path.join(root, config.mobile.directory, 'eas.json'));
         const buildProfile = easConfig.build[config.profiles[profile].easProfile];
@@ -91,7 +109,8 @@ export async function worker(phase, root, state) {
   }
   if (phase === 'native-start') {
     const intents = {};
-    for (const value of config.mobile.targets) intents[value.id] = await begin(client, plan, `build/${value.id}`);
+    for (const value of config.mobile.targets) intents[value.id] = (await receipt(client, plan, `build/${value.id}`))?.deploymentId
+      ?? await begin(client, plan, `build/${value.id}`);
     writeJson(path.join(state, 'native-intents.json'), intents); return;
   }
   if (phase === 'native-prebuild') { hook(root, config, 'buildPrepare', { plan }, plan.environments[plan.profile]); return; }
@@ -104,10 +123,8 @@ export async function worker(phase, root, state) {
   }
   if (phase === 'native-record' || phase === 'native-submit') {
     const intents = readJson(path.join(state, 'native-intents.json'));
-    for (const value of config.mobile.targets) {
+    for (const value of nativeArtifacts(plan, artifacts)) {
       const directory = path.join(artifacts, value.id);
-      if (phase === 'native-record' && !fs.existsSync(directory)) continue;
-      verify(directory, plan, value.id);
       let result = config.mobile.builder === 'command' ? { artifact: 'native.aab', digest: hash(fs.readFileSync(path.join(directory, 'native.aab'))) } : null;
       if (config.mobile.builder !== 'command') {
         const saved = readJson(path.join(directory, 'build.json')), inert = publisher(config, plan.profile);
@@ -116,9 +133,8 @@ export async function worker(phase, root, state) {
       }
       if (phase === 'native-record') await complete(client, plan, `build/${value.id}`, intents[value.id], result);
       else {
-        const id = await begin(client, plan, `submit/${value.id}`);
-        const submission = submit(plan, value, config.mobile.builder === 'command' ? { file: path.join(directory, 'native.aab') } : { buildId: result.id }, plan.submitProfiles);
-        await complete(client, plan, `submit/${value.id}`, id, submission);
+        await perform(client, plan, `submit/${value.id}`, () => submit(plan, value,
+          config.mobile.builder === 'command' ? { file: path.join(directory, 'native.aab') } : { buildId: result.id }, plan.submitProfiles));
       }
     }
     return;
@@ -129,21 +145,22 @@ export async function worker(phase, root, state) {
   assert(operation && plan.operations.includes(`${plan.profile}/${operation}`), 'Unknown or unselected release phase.');
   if (phase === 'server-publish') verify(path.join(artifacts, 'server'), plan, 'server');
   if (phase === 'ota-publish') verify(path.join(artifacts, `ota-${targetId}`), plan, `ota-${targetId}`);
-  const id = await begin(client, plan, operation);
-  let result;
-  if (phase === 'server-publish') {
-    const image = config.server.image, tag = `${image}:v${plan.versions.server}`, auth = path.join(osTemporary(), 'auth.json');
-    try {
-      run('skopeo', ['login', '--authfile', auth, '--username', process.env.GITHUB_ACTOR, '--password-stdin', 'ghcr.io'], { input: process.env.GHCR_TOKEN });
-      run('skopeo', ['copy', '--all', '--authfile', auth, `oci-archive:${path.join(artifacts, 'server/image.tar')}`, `docker://${tag}`]);
-      const digest = run('skopeo', ['inspect', '--authfile', auth, '--format', '{{.Digest}}', `docker://${tag}`]).trim();
-      assert(/^sha256:[a-f0-9]{64}$/.test(digest), 'Registry returned no image digest.');
-      for (const alias of [`sha-${plan.source}`, 'latest']) run('skopeo', ['copy', '--all', '--authfile', auth, `docker://${image}@${digest}`, `docker://${image}:${alias}`]);
-      result = { image, digest, version: plan.versions.server };
-    } finally { fs.rmSync(path.dirname(auth), { recursive: true, force: true }); }
-  } else if (phase === 'server-deploy') result = connectAndDeploy(config.server.deployment);
-  else result = update(plan, targetId, path.join(artifacts, `ota-${targetId}`));
-  await complete(client, plan, operation, id, result);
+  await perform(client, plan, operation, async () => {
+    let result;
+    if (phase === 'server-publish') {
+      const image = config.server.image, tag = `${image}:v${plan.versions.server}`, auth = path.join(osTemporary(), 'auth.json');
+      try {
+        run('skopeo', ['login', '--authfile', auth, '--username', process.env.GITHUB_ACTOR, '--password-stdin', 'ghcr.io'], { input: process.env.GHCR_TOKEN });
+        run('skopeo', ['copy', '--all', '--authfile', auth, `oci-archive:${path.join(artifacts, 'server/image.tar')}`, `docker://${tag}`]);
+        const digest = run('skopeo', ['inspect', '--authfile', auth, '--format', '{{.Digest}}', `docker://${tag}`]).trim();
+        assert(/^sha256:[a-f0-9]{64}$/.test(digest), 'Registry returned no image digest.');
+        for (const alias of [`sha-${plan.source}`, 'latest']) run('skopeo', ['copy', '--all', '--authfile', auth, `docker://${image}@${digest}`, `docker://${image}:${alias}`]);
+        result = { image, digest, version: plan.versions.server };
+      } finally { fs.rmSync(path.dirname(auth), { recursive: true, force: true }); }
+    } else if (phase === 'server-deploy') result = connectAndDeploy(config.server.deployment);
+    else result = update(plan, targetId, path.join(artifacts, `ota-${targetId}`));
+    return result;
+  });
 }
 
 /** Create a private directory for short-lived registry credentials. */
