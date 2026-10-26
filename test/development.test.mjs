@@ -112,7 +112,13 @@ test('preview workflow exports without credentials and has no release, deploymen
   assert.equal(workflow.jobs.export.if, undefined, 'Both operations must produce an OTA bundle.');
   assert.deepEqual(workflow.jobs.build.needs, ['context', 'environment', 'export']);
   assert.deepEqual(workflow.jobs.publish.needs, ['context', 'export', 'build']);
-  assert.equal(workflow.jobs.publish.if, "${{ !cancelled() && needs.export.result == 'success' && (needs.build.result == 'success' || (inputs.operation == 'update' && needs.build.result == 'skipped')) }}");
+  const publish = new Function('needs', 'inputs', 'cancelled', `return (${workflow.jobs.publish.if.slice(3, -2)});`);
+  for (const operation of ['build', 'update']) for (const exported of ['success', 'failure', 'skipped', 'cancelled'])
+    for (const built of operation === 'build' ? ['success', 'failure', 'skipped', 'cancelled'] : ['skipped']) for (const cancelled of [false, true]) {
+      const expected = !cancelled && exported === 'success' && (operation === 'update' || built === 'success');
+      assert.equal(publish({ export: { result: exported }, build: { result: built } }, { operation }, () => cancelled), expected,
+        `${operation}: export=${exported}, build=${built}, cancelled=${cancelled}`);
+    }
   for (const name of ['build', 'publish']) {
     const downloads = workflow.jobs[name].steps.filter(step => step.uses?.includes('download-artifact'));
     assert.ok(downloads.some(step => step.with.name === 'development-export'));
