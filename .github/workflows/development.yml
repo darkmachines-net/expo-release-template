@@ -5,7 +5,7 @@ on:
     inputs:
       operation: { type: string, required: true }
       platform: { type: string, required: true }
-      source: { type: string, default: '' }
+      source: { description: 'Source branch or full commit SHA; blank uses the dispatch commit', type: string, default: '' }
     secrets:
       EXPO_TOKEN: { required: true }
 permissions: { contents: read }

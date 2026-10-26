@@ -14,6 +14,21 @@ export function developmentProvider(config) {
   return { ...config, profiles: { development: config.development } };
 }
 
+/** Resolve a repository branch or full SHA once; later jobs and retries keep the resulting commit. */
+export function resolveDevelopmentSource(root, requested, fallback) {
+  const selected = requested?.trim() || fallback;
+  try {
+    const isCommit = /^[a-f0-9]{40}$/i.test(selected);
+    const ref = isCommit ? selected.toLowerCase() : 'refs/remotes/origin/' + selected;
+    if (!isCommit) git(root, ['check-ref-format', ref]);
+    const source = git(root, ['rev-parse', '--verify', '--quiet', '--end-of-options', ref + '^{commit}']);
+    assert(/^[a-f0-9]{40}$/.test(source), 'Missing source commit.');
+    return source;
+  } catch {
+    throw new Error('Development source must be an existing branch in this repository or a full commit SHA. Push the branch before building.');
+  }
+}
+
 /** Pin one manually requested source SHA and preview destination without reserving any release version. */
 export function developmentPlan(config, identity, { source = identity.source, operation, platform, attempt }) {
   developmentProvider(config);
@@ -87,7 +102,7 @@ export async function developmentWorker(phase, root, state) {
   if (phase === 'context') {
     const config = loadConfig(root), identity = hostedIdentity(config);
     verifyPins(root, identity.toolkit);
-    const plan = process.env.RELEASE_REUSE === 'true' ? readJson(file) : developmentPlan(config, identity, { source: process.env.PREVIEW_SOURCE || identity.source,
+    const plan = process.env.RELEASE_REUSE === 'true' ? readJson(file) : developmentPlan(config, identity, { source: resolveDevelopmentSource(root, process.env.PREVIEW_SOURCE, identity.source),
       operation: process.env.PREVIEW_OPERATION, platform: process.env.PREVIEW_PLATFORM, attempt: process.env.GITHUB_RUN_ATTEMPT });
     assert(plan.workflowSource === identity.source && plan.toolkit === identity.toolkit && plan.run === identity.run, 'Restored development context differs.');
     if (process.env.RELEASE_REUSE !== 'true') writeJson(file, plan);
