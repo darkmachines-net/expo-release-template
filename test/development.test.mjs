@@ -1,11 +1,11 @@
-/** @file Verify preview isolation, native variant selection, exact artifact publication and separate store destinations. */
+/** @file Verify immutable source resolution, preview isolation, native variants, exact publication and separate store destinations. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import YAML from 'yaml';
-import { developmentPlan, developmentProvider, verifyDevelopmentProfile, publishDevelopment } from '../src/development.mjs';
+import { developmentPlan, developmentProvider, resolveDevelopmentSource, developmentWorker, verifyDevelopmentProfile, publishDevelopment } from '../src/development.mjs';
 import { seal, writeJson, readJson } from '../src/io.mjs';
 import { submit } from '../src/eas.mjs';
 import { localPreviewPlan, preview } from '../src/preview.mjs';
@@ -129,4 +129,42 @@ test('local export failure or changed native inputs cannot publish and temporary
     assert.equal(published, mode === 'success' ? 1 : 0);
     assert.ok(!fs.existsSync(directory)); assert.ok(!fs.existsSync(directory + '.json'));
   }
+});
+
+test('source branches resolve from origin without local or tag ambiguity; full SHAs and blank input remain supported', t => {
+  const repo = repository(t);
+  repo.save('app.txt', 'original'); const original = repo.commit();
+  repo.git(['update-ref', 'refs/remotes/origin/feature/audio', original]);
+  repo.save('app.txt', 'local'); const local = repo.commit();
+  repo.git(['branch', 'feature/audio', local]); repo.git(['tag', 'feature/audio', local]);
+  repo.git(['tag', 'tag-only', local]);
+  assert.equal(resolveDevelopmentSource(repo.root, ' feature/audio ', local), original);
+  assert.equal(resolveDevelopmentSource(repo.root, original, local), original);
+  assert.equal(resolveDevelopmentSource(repo.root, original.toUpperCase(), local), original);
+  assert.equal(resolveDevelopmentSource(repo.root, '', local), local);
+  for (const input of ['missing', 'tag-only', '../audio', 'feature/audio~1', '--help', 'a'.repeat(40)])
+    assert.throws(() => resolveDevelopmentSource(repo.root, input, local), /existing branch.*full commit SHA/);
+});
+
+test('a retried context preserves its resolved commit when the source branch moves', async t => {
+  const repo = repository(t), cfg = fixture(), toolkit = 'b'.repeat(40); delete cfg.mobile.platforms;
+  repo.save('release.config.json', JSON.stringify(cfg));
+  repo.save('package.json', JSON.stringify({ devDependencies: { '@mchartier/expo-release': 'git+https://github.com/darkmachines-net/expo-release-template.git#' + toolkit } }));
+  repo.save('package-lock.json', JSON.stringify({ packages: { 'node_modules/@mchartier/expo-release': { resolved: 'git+https://github.com/darkmachines-net/expo-release-template.git#' + toolkit } } }));
+  const source = repo.commit(); repo.git(['update-ref', 'refs/remotes/origin/feature/audio', source]);
+  const state = temporary(t), env = { GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main',
+    GITHUB_REPOSITORY: cfg.repository, GITHUB_SHA: source, TOOLKIT_SHA: toolkit, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1',
+    PREVIEW_SOURCE: 'feature/audio', PREVIEW_OPERATION: 'build', PREVIEW_PLATFORM: 'android', RELEASE_REUSE: 'false', GITHUB_OUTPUT: path.join(state, 'outputs') };
+  const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  Object.assign(process.env, env);
+  await developmentWorker('context', repo.root, state);
+  const first = readJson(path.join(state, 'development.json'));
+  assert.equal(first.source, source); assert.equal(first.branch, 'preview-123-1');
+  repo.save('app.txt', 'branch advances'); const newer = repo.commit();
+  repo.git(['update-ref', 'refs/remotes/origin/feature/audio', newer]);
+  process.env.RELEASE_REUSE = 'true'; process.env.GITHUB_RUN_ATTEMPT = '2';
+  await developmentWorker('context', repo.root, state);
+  assert.deepEqual(readJson(path.join(state, 'development.json')), first);
+  assert.ok(fs.readFileSync(path.join(state, 'outputs'), 'utf8').trimEnd().endsWith('source=' + source));
 });
