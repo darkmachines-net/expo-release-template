@@ -1,4 +1,4 @@
-/** @file Official EAS operations; isolated public readers reconcile accepted builds and their store submissions. */
+/** @file Official EAS operations reconcile builds/submissions and verify managed or paired local counters. */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -6,6 +6,7 @@ import { parseEnv } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { assert } from './engine.mjs';
 import { run, readJson, writeJson, sourceEnvironment, verify } from './io.mjs';
+import { targetBuilder } from './consumer/config.mjs';
 export const EAS_VERSION = '25.3.0';
 
 /** Run the pinned CLI, preserving submission diagnostics; only EAS Build evaluates authenticated source. */
@@ -63,21 +64,23 @@ export function readEnvironments(config, command = eas) {
   return result;
 }
 
-/** Verify remote managed counters before reserving a release; initialization remains an explicit EAS setup operation. */
+/** Verify remote EAS counters; paired local counters are allocated from immutable reservations instead. */
 export function verifyBuildFloors(config, command = eas) {
-  if (!config.mobile || config.mobile.builder === 'command') return;
+  if (!config.mobile || config.mobile.pairCodeFloor !== undefined) return;
+  const targets = config.mobile.targets.filter(t => targetBuilder(config, t) === 'eas');
+  if (!targets.length) return;
   const profile = Object.keys(config.profiles)[0], root = publisher(config, profile);
   try {
-    const remote = command(['build:version:get', '--platform', config.mobile.targets.length === 2 ? 'all' : config.mobile.targets[0].platform,
+    const remote = command(['build:version:get', '--platform', new Set(targets.map(t => t.platform)).size === 2 ? 'all' : targets[0].platform,
       '--profile', config.profiles[profile].easProfile, '--json', '--non-interactive'], root);
-    for (const target of config.mobile.targets) {
+    for (const target of targets) {
       const code = Number(remote[target.platform === 'android' ? 'versionCode' : 'buildNumber']);
       assert(Number.isSafeInteger(code) && code >= (target.buildNumberFloor ?? 0), 'Initialize EAS managed build numbers at or above the verified platform floors using eas build:version:set before releasing.');
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
-/** Verify native identity from the public build:view JSON contract independently of store status. */
+/** Verify native identity and any reserved iOS build number independently of store status. */
 export function verifyBuild(build, plan, target) {
   const profile = plan.config.profiles[plan.profile];
   assert(build?.id && build.status === 'FINISHED' && build.app?.id === plan.config.mobile.projectId
@@ -86,6 +89,7 @@ export function verifyBuild(build, plan, target) {
     && build.appVersion === plan.versions.mobile && build.runtime?.version === plan.runtime
     && build.updateChannel?.name === profile.channel && !build.isForIosSimulator
     && build.fingerprint?.hash === plan.observation.fingerprints[plan.profile][target.platform], 'EAS build identity or native compatibility differs.');
+  if (target.platform === 'ios' && plan.pair) assert(build.appBuildVersion === String(plan.pair[0]), 'EAS iOS build number differs from the reserved phone code.');
   return build;
 }
 
