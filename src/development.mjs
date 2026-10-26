@@ -1,4 +1,4 @@
-/** @file Ad-hoc development builds and sealed preview bundles, without release versions, channels or store operations. */
+/** @file Pair development clients with sealed compatible previews, without release versions, channels or store operations. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -77,14 +77,27 @@ export function inspectDevelopment(root, plan) {
   return { app, cli, env, expo: { ...expo, runtimeVersion }, runtimeVersion, applicationId, updatesVersion: require('expo-updates/package.json').version };
 }
 
-/** Publish only the current run's verified bytes to a unique branch; no persistent channel is created or changed. */
-export function publishDevelopment(plan, directory, command = eas) {
+/** Verify a finished development client's source, identity and runtime against its exported preview. */
+export function verifyDevelopmentBuild(build, plan, expo) {
+  const applicationId = plan.platform === 'android' ? expo.android?.package : expo.ios?.bundleIdentifier;
+  assert(build?.id && build.status === 'FINISHED' && build.app?.id === plan.config.mobile.projectId
+    && build.gitCommitHash === plan.source && build.appIdentifier === applicationId && applicationId?.endsWith('.development')
+    && build.buildProfile === plan.config.development.easProfile && build.platform?.toLowerCase() === plan.platform
+    && build.distribution === 'INTERNAL' && !build.isForIosSimulator
+    && build.runtime?.version === expo.runtimeVersion && /^[a-f0-9]{40,64}$/.test(expo.runtimeVersion),
+  'Development build identity or preview runtime differs.');
+  return build;
+}
+
+/** Publish this run's sealed preview; build operations additionally require a matching finished client. */
+export function publishDevelopment(plan, directory, command = eas, build) {
   verify(directory, plan, 'development');
   const info = readJson(path.join(directory, 'development.json'));
   assert(info.expo?.extra?.eas?.projectId === plan.config.mobile.projectId && info.platform === plan.platform
     && /^[a-f0-9]{40,64}$/.test(info.expo.runtimeVersion) && /^\d+\.\d+\.\d+/.test(info.updatesVersion), 'Preview artifact metadata differs.');
   const applicationId = plan.platform === 'android' ? info.expo.android?.package : info.expo.ios?.bundleIdentifier;
   assert(applicationId?.endsWith('.development'), 'Preview must retain its development identity.');
+  if (plan.operation === 'build') verifyDevelopmentBuild(build, plan, info.expo);
   const root = publisher(developmentProvider(plan.config), 'development', { target: { applicationId }, expo: info.expo, updatesVersion: info.updatesVersion });
   try {
     const result = command(['update', '--branch', plan.branch, '--environment', plan.config.development.environment,
@@ -123,30 +136,31 @@ export async function developmentWorker(phase, root, state) {
     return;
   }
   if (phase === 'publish') {
-    assert(plan.operation === 'update', 'Only update previews can be published.');
-    const result = publishDevelopment(plan, path.resolve('artifacts/development'));
+    const build = plan.operation === 'build' ? readJson('artifacts/development-build.json') : undefined;
+    const result = publishDevelopment(plan, path.resolve('artifacts/development'), eas, build);
     writeJson('artifacts/preview-result.json', result);
     const mobile = plan.config.mobile;
-    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Open this [preview in the EAS dashboard](https://expo.dev/accounts/${mobile.owner}/projects/${mobile.slug}/updates/${result.group}) and scan its development-build QR code.\n\nBranch: ${plan.branch}; source: ${plan.source}; runtime: ${result.runtimeVersion}.\n`);
+    const install = build ? `Install this [development client](https://expo.dev/accounts/${mobile.owner}/projects/${mobile.slug}/builds/${build.id}), then open its matching preview below.\n\n` : '';
+    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${install}Open this [preview in the EAS dashboard](https://expo.dev/accounts/${mobile.owner}/projects/${mobile.slug}/updates/${result.group}) and scan its development-build QR code, or refresh Updates in the client and select branch ${plan.branch}. Metro is not required.\n\nBranch: ${plan.branch}; source: ${plan.source}; runtime: ${result.runtimeVersion}.\n`);
     return;
   }
   const info = inspectDevelopment(root, plan);
   if (phase === 'export') {
-    assert(plan.operation === 'update', 'Only update previews can be exported.');
     const directory = path.resolve('artifacts/development');
     run(process.execPath, [info.cli, 'export', '--platform', plan.platform, '--output-dir', directory], { cwd: info.app, env: info.env, stdio: 'inherit' });
     writeJson(path.join(directory, 'development.json'), { expo: info.expo, platform: plan.platform, updatesVersion: info.updatesVersion });
     seal(directory, plan, 'development'); return;
   }
   assert(phase === 'build' && plan.operation === 'build', 'Unknown development phase.');
+  const directory = path.resolve('artifacts/development');
+  verify(directory, plan, 'development');
+  const bundle = readJson(path.join(directory, 'development.json'));
+  assert(bundle.platform === plan.platform && hash(bundle.expo) === hash(info.expo), 'Development export configuration changed before build.');
   const result = eas(['build', '--platform', plan.platform, '--profile', spec.easProfile, '--non-interactive', '--wait', '--json'], info.app,
     { environment: { ...info.env, EAS_NO_VCS: '0' } });
   const builds = Array.isArray(result) ? result : [result];
   assert(builds.length === 1, 'Expected one development build.');
-  const build = builds[0];
-  assert(build.id && build.status === 'FINISHED' && build.app?.id === plan.config.mobile.projectId
-    && build.gitCommitHash === plan.source && build.appIdentifier === info.applicationId && build.buildProfile === spec.easProfile
-    && build.platform?.toLowerCase() === plan.platform && build.distribution === 'INTERNAL', 'Development build identity differs.');
+  const build = verifyDevelopmentBuild(builds[0], plan, bundle.expo);
   writeJson('artifacts/development-build.json', build);
-  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Install this [development build](https://expo.dev/accounts/${plan.config.mobile.owner}/projects/${plan.config.mobile.slug}/builds/${build.id}).\n\nSource: ${plan.source}; native fingerprint: ${info.runtimeVersion}. No store submission or release reservation was made.\n`);
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Created [development build](https://expo.dev/accounts/${plan.config.mobile.owner}/projects/${plan.config.mobile.slug}/builds/${build.id}). Its hosted preview is ready only after the publish job succeeds.\n\nSource: ${plan.source}; native fingerprint: ${info.runtimeVersion}.\n`);
 }

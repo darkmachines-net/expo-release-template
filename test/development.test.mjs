@@ -1,11 +1,11 @@
-/** @file Verify immutable source resolution, preview isolation, native variants, exact publication and separate store destinations. */
+/** @file Verify source pinning, client/preview runtime pairing, publication gates, isolation and separate store destinations. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import YAML from 'yaml';
-import { developmentPlan, developmentProvider, resolveDevelopmentSource, developmentWorker, verifyDevelopmentProfile, publishDevelopment } from '../src/development.mjs';
+import { developmentPlan, developmentProvider, resolveDevelopmentSource, developmentWorker, verifyDevelopmentProfile, verifyDevelopmentBuild, publishDevelopment } from '../src/development.mjs';
 import { seal, writeJson, readJson } from '../src/io.mjs';
 import { submit } from '../src/eas.mjs';
 import { localPreviewPlan, preview } from '../src/preview.mjs';
@@ -53,11 +53,13 @@ test('development rejects store, channel, version and native platform overrides'
     assert.throws(() => verifyDevelopmentProfile({ build: { development: { ...profile, ...change } } }, spec));
 });
 
-test('preview publishes verified bytes to its branch from an inert project and rejects tampering', t => {
+for (const operation of ['build', 'update']) test(`${operation} publishes verified preview bytes from an inert project and rejects tampering`, t => {
   const cfg = fixture(), directory = path.join(temporary(t), 'bundle');
   const value = developmentPlan(cfg, { source: 'a'.repeat(40), toolkit: 'b'.repeat(40), run: '123', repository: cfg.repository },
-    { operation: 'update', platform: 'android', attempt: '1' });
+    { operation, platform: 'android', attempt: '1' });
   const runtime = 'c'.repeat(40);
+  const build = { id: 'client', status: 'FINISHED', app: { id: cfg.mobile.projectId }, gitCommitHash: value.source,
+    appIdentifier: 'app.example.mobile.development', buildProfile: 'development', platform: 'ANDROID', distribution: 'INTERNAL', runtime: { version: runtime } };
   writeJson(path.join(directory, 'development.json'), { platform: 'android', updatesVersion: '58.0.2',
     expo: { android: { package: 'app.example.mobile.development' }, runtimeVersion: runtime, extra: { eas: { projectId: cfg.mobile.projectId } }, plugins: ['untrusted-plugin'] } });
   fs.writeFileSync(path.join(directory, 'bundle.js'), 'preview bytes'); seal(directory, value, 'development');
@@ -67,9 +69,29 @@ test('preview publishes verified bytes to its branch from an inert project and r
     assert.ok(!args.includes('--channel')); assert.ok(args.includes('--skip-bundler'));
     assert.equal(readJson(path.join(root, 'app.json')).expo.plugins, undefined);
     return [{ group: 'group', platform: 'android', runtimeVersion: runtime }];
-  });
+  }, operation === 'build' ? build : undefined);
   assert.equal(calls, 1); fs.appendFileSync(path.join(directory, 'bundle.js'), 'tampered');
   assert.throws(() => publishDevelopment(value, directory, () => { throw new Error('must not publish'); }), /identity|digest/);
+});
+
+test('build previews require a finished client matching the export before any upload', t => {
+  const cfg = fixture(), directory = path.join(temporary(t), 'bundle');
+  const value = developmentPlan(cfg, { source: 'a'.repeat(40), toolkit: 'b'.repeat(40), run: '123', repository: cfg.repository },
+    { operation: 'build', platform: 'android', attempt: '1' });
+  const expo = { android: { package: 'app.example.mobile.development' }, runtimeVersion: 'c'.repeat(40), extra: { eas: { projectId: cfg.mobile.projectId } } };
+  writeJson(path.join(directory, 'development.json'), { expo, platform: 'android', updatesVersion: '58.0.2' });
+  fs.writeFileSync(path.join(directory, 'bundle.js'), 'preview bytes'); seal(directory, value, 'development');
+  const build = { id: 'client', status: 'FINISHED', app: { id: cfg.mobile.projectId }, gitCommitHash: value.source,
+    appIdentifier: expo.android.package, buildProfile: 'development', platform: 'ANDROID', distribution: 'INTERNAL', runtime: { version: expo.runtimeVersion } };
+  let uploads = 0;
+  for (const change of [undefined, { id: '' }, { status: 'ERRORED' }, { status: 'IN_PROGRESS' }, { runtime: undefined },
+    { runtime: { version: 'd'.repeat(40) } }, { app: { id: 'other' } }, { gitCommitHash: 'd'.repeat(40) },
+    { appIdentifier: 'app.example.mobile' }, { buildProfile: 'production' }, { platform: 'IOS' }, { distribution: 'STORE' }, { isForIosSimulator: true }]) {
+    assert.throws(() => publishDevelopment(value, directory, () => { uploads++; }, change ? { ...build, ...change } : undefined), /identity or preview runtime/);
+  }
+  assert.equal(uploads, 0);
+  const ios = { ...build, platform: 'IOS' };
+  assert.equal(verifyDevelopmentBuild(ios, { ...value, platform: 'ios' }, { ...expo, ios: { bundleIdentifier: build.appIdentifier } }), ios);
 });
 
 test('paired beta and production submissions select their own destination profiles', async () => {
@@ -87,7 +109,23 @@ test('preview workflow exports without credentials and has no release, deploymen
   assert.deepEqual(workflow.permissions, { contents: 'read' });
   assert.ok(!JSON.stringify(workflow.jobs.export).includes('secrets.'));
   assert.ok(!JSON.stringify(workflow.jobs.publish).includes('development.mjs install'));
-  assert.deepEqual(workflow.jobs.publish.needs, ['context', 'export']);
+  assert.equal(workflow.jobs.export.if, undefined, 'Both operations must produce an OTA bundle.');
+  assert.deepEqual(workflow.jobs.build.needs, ['context', 'environment', 'export']);
+  assert.deepEqual(workflow.jobs.publish.needs, ['context', 'export', 'build']);
+  const publish = new Function('needs', 'inputs', 'cancelled', `return (${workflow.jobs.publish.if.slice(3, -2)});`);
+  for (const operation of ['build', 'update']) for (const exported of ['success', 'failure', 'skipped', 'cancelled'])
+    for (const built of operation === 'build' ? ['success', 'failure', 'skipped', 'cancelled'] : ['skipped']) for (const cancelled of [false, true]) {
+      const expected = !cancelled && exported === 'success' && (operation === 'update' || built === 'success');
+      assert.equal(publish({ export: { result: exported }, build: { result: built } }, { operation }, () => cancelled), expected,
+        `${operation}: export=${exported}, build=${built}, cancelled=${cancelled}`);
+    }
+  for (const name of ['build', 'publish']) {
+    const downloads = workflow.jobs[name].steps.filter(step => step.uses?.includes('download-artifact'));
+    assert.ok(downloads.some(step => step.with.name === 'development-export'));
+  }
+  const client = workflow.jobs.publish.steps.find(step => step.with?.name === 'development-build');
+  assert.equal(client.if, "inputs.operation == 'build'");
+  assert.equal(workflow.jobs.build.steps.at(-1).with.path, 'artifacts/development-build.json');
   for (const job of Object.values(workflow.jobs)) for (const step of job.steps) {
     assert.ok(!/worker.mjs|eas submit|eas channel|git push/.test(step.run ?? ''));
     if (step.uses?.includes('download-artifact')) assert.equal(step.with['run-id'], undefined);
