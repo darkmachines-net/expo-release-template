@@ -20,7 +20,7 @@ See the [serverless example](examples/expo-only/README.md), [consumer contract a
 
 Use three build profiles but only two persistent release channels. `development` is a custom Expo development client that opens a selected preview; `beta` and `production` are release-mode builds following their corresponding channels. Development is configured separately from `profiles`, so previews do not allocate release versions, establish release baselines, deploy servers or submit to stores.
 
-For the manual pre-review workflow and native-client setup, see [development previews](src/consumer/README.md#development-previews). The optional [Development workflow](.github/workflows/development.yml) builds the installable client or publishes a hosted preview. Store releases continue through [release.yml](.github/workflows/release.yml).
+For the manual pre-review workflow and native-client setup, see [development previews](src/consumer/README.md#development-previews). The optional [Development workflow](.github/workflows/development.yml) builds an installable client with a matching hosted preview, or publishes a preview for an existing compatible client. Store releases continue through [release.yml](.github/workflows/release.yml).
 
 ## Selection and versions
 

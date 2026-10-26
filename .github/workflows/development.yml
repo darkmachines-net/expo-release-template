@@ -1,4 +1,4 @@
-# Build custom dev clients or export isolated previews without release reservations, deployment or store submission.
+# Pair custom dev clients with compatible hosted previews, or publish previews for existing clients.
 name: Expo development preview
 on:
   workflow_call:
@@ -48,7 +48,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with: { name: 'development-environment', path: state, if-no-files-found: error }
   build:
-    needs: [context, environment]
+    needs: [context, environment, export]
     if: inputs.operation == 'build'
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -60,15 +60,16 @@ jobs:
         with: { source: '${{ needs.context.outputs.source }}', eas: 'true', reuse: development-build, directory: artifacts }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with: { name: 'development-environment', path: state }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: { name: 'development-export', path: artifacts }
       - run: node .toolkit/bin/development.mjs install
       - run: node .toolkit/bin/development.mjs build
         env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}' }
       - if: env.RELEASE_REUSE != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with: { name: 'development-build', path: artifacts, if-no-files-found: error }
+        with: { name: 'development-build', path: artifacts/development-build.json, if-no-files-found: error }
   export:
     needs: [context, environment]
-    if: inputs.operation == 'update'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -84,7 +85,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with: { name: 'development-export', path: artifacts, if-no-files-found: error }
   publish:
-    needs: [context, export]
+    needs: [context, export, build]
+    if: ${{ !cancelled() && needs.export.result == 'success' && (needs.build.result == 'success' || (inputs.operation == 'update' && needs.build.result == 'skipped')) }}
     runs-on: ubuntu-latest
     environment: ${{ needs.context.outputs.approval }}
     steps:
@@ -96,5 +98,8 @@ jobs:
         with: { name: 'development-environment', path: state }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with: { name: 'development-export', path: artifacts }
+      - if: inputs.operation == 'build'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: { name: 'development-build', path: artifacts }
       - run: node .toolkit/bin/development.mjs publish
         env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}' }
