@@ -39,7 +39,7 @@ The workflow stamps a detached child commit of the selected source and reserves 
 
 ## Execution and trust
 
-The server path builds and smoke-tests a Docker archive without registry credentials. A separate protected job verifies the current-run artifact, publishes version/commit tags and records its digest. The deployment job opens the configured WireGuard tunnel, invokes the existing webhook once and requires its success/health response before advancing the deployment baseline. A health response does not prove the exact remotely running image digest.
+The server path builds and smoke-tests a Docker archive without registry credentials. A separate protected job verifies the current-run artifact, publishes version/commit tags and records its digest. The deployment job selects the configured WireGuard webhook or Cloud Run provider. WireGuard requires the webhook success/health acknowledgement; it cannot prove the running digest. Cloud Run mirrors the confirmed digest, runs a migration job, checks the isolated revision before directing traffic, updates scheduled jobs, then deploys Firebase Hosting and checks public readiness. See [deployment configuration](.github/workflows/README.md#cloud-run-and-firebase-hosting).
 
 Selected server deployment precedes native delivery. Ordinary apps use EAS Build, followed by EAS Submit when configured. Internal distribution finishes with EAS Build. Calibrate keeps its paired Gradle builder and signing/artifact checks, then submits the resulting phone and watch bundles in order through EAS. Store review and promotions remain in provider tooling.
 

@@ -113,3 +113,14 @@ test('upstream setup uses a full action SHA and a pinned EAS version before cred
   assert.ok(setup.runs.steps.some(step => step.run?.includes('npm ci --prefix .toolkit --ignore-scripts')));
   assert.ok(!fs.existsSync(new URL('../toolchain/package-lock.json', import.meta.url)));
 });
+
+/** Verify that cloud credentials are scoped to the protected deployment phase. */
+test("cloud deployments use pinned Google actions and job-scoped OIDC", () => {
+  assert.equal(jobs["server-deploy"].permissions["id-token"], "write");
+  for (const action of ["auth", "setup-gcloud"]) {
+    const step = jobs["server-deploy"].steps.find(step => step.uses?.startsWith("google-github-actions/" + action + "@"));
+    assert.match(step.uses, /@[a-f0-9]{40}$/);
+    assert.match(step.if, /cloud-run/);
+  }
+  for (const name of ["prepare", "server-build", "ota-export"]) assert.notEqual(jobs[name].permissions?.["id-token"], "write");
+});
