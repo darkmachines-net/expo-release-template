@@ -58,9 +58,68 @@
             "image": { "type": "string" }, "environment": { "type": "object", "additionalProperties": { "type": "string" } }
           }, "additionalProperties": false } }
         } },
-        "deployment": { "type": "object", "additionalProperties": false, "required": ["service", "path"], "properties": {
-          "service": { "$ref": "#/definitions/name" }, "path": { "type": "string", "pattern": "^/deploy/[A-Za-z0-9_-]+$" }
-        } }
+        "deployment": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "service",
+                "path"
+              ],
+              "properties": {
+                "service": {
+                  "$ref": "#/definitions/name"
+                },
+                "path": {
+                  "type": "string",
+                  "pattern": "^/deploy/[A-Za-z0-9_-]+$"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "provider",
+                "service",
+                "region",
+                "repository",
+                "migrationJob",
+                "originVariable"
+              ],
+              "properties": {
+                "provider": {
+                  "const": "cloud-run"
+                },
+                "service": {
+                  "$ref": "#/definitions/name"
+                },
+                "region": {
+                  "type": "string",
+                  "pattern": "^[a-z]+-[a-z]+[0-9]$"
+                },
+                "repository": {
+                  "$ref": "#/definitions/name"
+                },
+                "migrationJob": {
+                  "$ref": "#/definitions/name"
+                },
+                "jobs": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "$ref": "#/definitions/name"
+                  }
+                },
+                "originVariable": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Z0-9_]*$"
+                }
+              }
+            }
+          ]
+        }
       }
     }
   },

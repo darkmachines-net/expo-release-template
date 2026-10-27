@@ -30,3 +30,11 @@ A fresh dispatch remains available after failure without GitHub deployment clean
 ## Development build and preview workflow
 
 [development.yml](development.yml) is an optional manual workflow alongside release.yml. It never dispatches a release. Configure and use it as described in the [development preview contract](../../src/consumer/README.md#development-previews). Package, release-workflow and development-workflow pins must match; the shared pin updater handles all three.
+
+## Cloud Run and Firebase Hosting
+
+Set server.deployment to provider cloud-run, the existing service, repository, region, migrationJob, optional jobs, and originVariable naming the public HTTPS origin in each profile public environment. Bootstrap infrastructure before release. The deployment worker owns image promotion, migration execution, isolated readiness, traffic, scheduled-job images and Hosting rewrites. It does not provision databases or run account imports.
+
+The protected deployment environment supplies GCP_PROJECT_ID, GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_SERVICE_ACCOUNT. Configure GitHub OIDC federation restricted to the repository, default branch, protected environment and trusted reusable workflow. Grant that identity registry write, Cloud Run deployment/job execution, runtime service-account use and Hosting deployment. The caller must permit id-token: write. No service-account key is needed. The runtime identity remains separate.
+
+A confirmed current-run deployment receipt skips repeat work. An unconfirmed job retry uses a new revision suffix for the workflow attempt; migration commands must be safe to rerun. Failures never advance the success baseline. Inspect ambiguous provider executions before maintenance or destructive recovery. New releases remain possible regardless of previous uncertainty. Tests inject every command and never dispatch a live release.
