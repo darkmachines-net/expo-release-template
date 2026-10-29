@@ -24,9 +24,18 @@ export function verifyRun(service, revision, image) {
   return name;
 }
 
+/** Resolve the unique linux/amd64 manifest Cloud Run executes while retaining the published index as deployment provenance. */
+export function runtimeImage(image, manifest) {
+  if (!manifest.manifests) { assert(manifest.config?.digest, 'Invalid image manifest.'); return image; }
+  const platform = manifest.manifests.filter(value => value.platform?.os === 'linux' && value.platform?.architecture === 'amd64');
+  assert(platform.length === 1 && /^sha256:[a-f0-9]{64}$/.test(platform[0].digest), 'Image must contain one linux/amd64 manifest.');
+  return image.split('@')[0] + '@' + platform[0].digest;
+}
+
 /** Execute once per unconfirmed deployment attempt; never roll back a database or publish Hosting before readiness. */
 export async function deployGcp(spec, published, plan, env = process.env, execute = run, fetcher = fetch) {
   const value = gcpInputs(spec, published, plan), directory = fs.mkdtempSync(path.join(os.tmpdir(), 'expo-gcp-'));
+  let resolvedImage;
   /** Capture credential-bearing command output and bound every external command. */
   const command = (binary, args, options = {}) => execute(binary, args, { env, timeout: 600000, stdio: ['pipe', 'pipe', 'pipe'], ...options });
   /** Run gcloud against the declared project and region without changing its default configuration. */
@@ -35,7 +44,7 @@ export async function deployGcp(spec, published, plan, env = process.env, execut
   const ready = name => {
     const service = JSON.parse(cloud(['run', 'services', 'describe', name, `--region=${spec.region}`]));
     const revision = JSON.parse(cloud(['run', 'revisions', 'describe', service.status.latestReadyRevisionName, `--region=${spec.region}`]));
-    return { service, revision: verifyRun(service, revision, value.image) };
+    return { service, revision: verifyRun(service, revision, resolvedImage) };
   };
   /** Check application and schema health on the selected HTTPS endpoint without following redirects. */
   const health = async (origin, revision) => {
@@ -50,6 +59,7 @@ export async function deployGcp(spec, published, plan, env = process.env, execut
     const tag = `${spec.registry}:run-${plan.run}`;
     command('skopeo', ['copy', '--all', '--preserve-digests', '--authfile', auth, `docker://${value.source}`, `docker://${tag}`]);
     assert(command('skopeo', ['inspect', '--authfile', auth, '--format', '{{.Digest}}', `docker://${tag}`]).trim() === published.digest, 'Registry copy changed the immutable image digest.');
+    resolvedImage = runtimeImage(value.image, JSON.parse(command('skopeo', ['inspect', '--raw', '--authfile', auth, `docker://${value.image}`])));
     cloud(['run', 'jobs', 'update', spec.migrationJob, `--region=${spec.region}`, `--image=${value.image}`]);
     const migrated = JSON.parse(cloud(['run', 'jobs', 'execute', spec.migrationJob, `--region=${spec.region}`, '--wait']));
     assert(migrated.status?.conditions?.some(c => c.type === 'Completed' && c.status === 'True'), 'Migration execution did not complete.');

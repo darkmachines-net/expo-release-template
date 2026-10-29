@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { deployGcp, gcpInputs, verifyRun } from '../src/gcp.mjs';
+import { deployGcp, gcpInputs, verifyRun, runtimeImage } from '../src/gcp.mjs';
 import { plan } from './helpers.mjs';
 
 /** Provide provider-shaped readback and command tracing for a complete gated deployment. */
@@ -14,7 +14,7 @@ function harness() {
   const execute = (binary, args, options) => {
     calls.push({ binary, args, options });
     if (args.includes('print-access-token')) return 'synthetic-token';
-    if (binary === 'skopeo' && args[0] === 'inspect') return digest;
+    if (binary === 'skopeo' && args[0] === 'inspect') return args.includes('--raw') ? JSON.stringify({ config: { digest } }) : digest;
     if (args[0] === 'run' && args[1] === 'services' && args[2] === 'describe') return JSON.stringify({ status: { latestReadyRevisionName: args[3] + '-revision', latestCreatedRevisionName: args[3] + '-revision', conditions: [{ type: 'Ready', status: 'True' }], traffic: [{ tag: 'release-' + release.run, revisionName: spec.api + '-revision', url: 'https://verified.run.app' }] } });
     if (args[1] === 'revisions') return JSON.stringify({ metadata: { name: args[3] }, status: { imageDigest: image } });
     if (args[1] === 'jobs' && args[2] === 'execute') return JSON.stringify({ metadata: { name: 'migration-execution' }, status: { conditions: [{ type: 'Completed', status: 'True' }] } });
@@ -36,6 +36,13 @@ test('migrates, verifies exact API/worker images and readiness, then publishes p
   assert.ok(migration < worker && worker < staged && staged < hosting);
   assert.equal(h.calls.at(-1).health, h.spec.origin + '/api/ready');
   const auth = h.calls.find(c => c.binary === 'skopeo').args; assert.equal(fs.existsSync(auth[auth.indexOf('--authfile') + 1]), false);
+});
+test('verifies the platform digest selected from an immutable multi-platform index', () => {
+  const image = 'registry.example/app@sha256:' + 'a'.repeat(64), digest = 'sha256:' + 'b'.repeat(64);
+  const platform = { platform: { os: 'linux', architecture: 'amd64' }, digest };
+  assert.equal(runtimeImage(image, { manifests: [platform, { platform: { os: 'unknown', architecture: 'unknown' } }] }), 'registry.example/app@' + digest);
+  assert.throws(() => runtimeImage(image, { manifests: [platform, platform] }), /one linux/);
+  assert.throws(() => runtimeImage(image, { manifests: [] }), /one linux/);
 });
 test('rejects missing or mismatched publication receipts before any cloud operation', async () => {
   const h = harness();
