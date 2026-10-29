@@ -32,7 +32,16 @@ export async function smoke(root, plan, archive, execute = run, fetcher = fetch)
       const container = `${id}-${name}`; containers.push(container);
       command(['run', '-d', '--name', container, '--network', id, '--network-alias', name,
         ...Object.entries(service.environment).flatMap(([k, v]) => ['-e', `${k}=${v}`]), service.image]);
+      if (service.ready) {
+        let healthy = false;
+        for (let attempt = 0; attempt < 30 && !healthy; attempt++) {
+          try { command(['exec', container, ...service.ready]); healthy = true; } catch { await delay(1000); }
+        }
+        assert(healthy, 'Smoke dependency did not become ready.');
+      }
     }
+    if (spec.initialize) command(['run', '--rm', '--network', id,
+      ...Object.entries(spec.environment ?? {}).flatMap(([k, v]) => ['-e', `${k}=${v}`]), image, ...spec.initialize]);
     containers.push(id);
     command(['run', '-d', '--name', id, '--network', id, '-p', `127.0.0.1::${spec.port}`,
       ...Object.entries(spec.environment ?? {}).flatMap(([k, v]) => ['-e', `${k}=${v}`]), image]);
