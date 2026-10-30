@@ -54,13 +54,18 @@
         "smoke": { "type": "object", "additionalProperties": false, "required": ["port", "healthPath"], "properties": {
           "port": { "type": "integer", "minimum": 1, "maximum": 65535 }, "healthPath": { "type": "string", "pattern": "^/" },
           "environment": { "type": "object", "additionalProperties": { "type": "string" } },
+          "initialize": { "$ref": "#/definitions/command" },
           "services": { "type": "object", "additionalProperties": { "type": "object", "required": ["image", "environment"], "properties": {
-            "image": { "type": "string" }, "environment": { "type": "object", "additionalProperties": { "type": "string" } }
+            "image": { "type": "string" }, "environment": { "type": "object", "additionalProperties": { "type": "string" } }, "ready": { "$ref": "#/definitions/command" }
           }, "additionalProperties": false } }
         } },
-        "deployment": { "type": "object", "additionalProperties": false, "required": ["service", "path"], "properties": {
+        "deployment": { "oneOf": [{ "type": "object", "additionalProperties": false, "required": ["service", "path"], "properties": {
           "service": { "$ref": "#/definitions/name" }, "path": { "type": "string", "pattern": "^/deploy/[A-Za-z0-9_-]+$" }
-        } }
+        } }, { "type": "object", "additionalProperties": false, "required": ["provider", "project", "region", "api", "worker", "migrationJob", "hostingSite", "registry", "origin"], "properties": {
+          "provider": { "const": "gcp" }, "project": { "$ref": "#/definitions/name" }, "region": { "$ref": "#/definitions/name" },
+          "api": { "$ref": "#/definitions/name" }, "worker": { "$ref": "#/definitions/name" }, "migrationJob": { "$ref": "#/definitions/name" }, "hostingSite": { "$ref": "#/definitions/name" },
+          "registry": { "type": "string", "pattern": "^[a-z0-9-]+-docker.pkg.dev/[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+$" }, "origin": { "type": "string", "pattern": "^https://" }
+        } }] }
       }
     }
   },

@@ -64,3 +64,15 @@ test('cleanup errors preserve the original container failure', async t => {
   }), /original failure/);
   assert.deepEqual(h.calls.at(-1).args.slice(0, 2), ['image', 'rm']);
 });
+
+test('dependency readiness and image initialization precede API startup', async t => {
+  const h = harness(t);
+  h.release.config.server.smoke.services.database.ready = ['pg_isready'];
+  h.release.config.server.smoke.initialize = ['node', 'migrate.js'];
+  await smoke(h.root, h.release, 'image.tar', h.execute, async () => ({ ok: true }));
+  const ready = h.calls.findIndex(c => c.args[0] === 'exec');
+  const initialized = h.calls.findIndex(c => c.args.includes('migrate.js'));
+  const api = h.calls.findIndex(c => c.args.includes('127.0.0.1::8080'));
+  assert.ok(ready >= 0 && ready < initialized && initialized < api);
+  assert.ok(h.calls[initialized].args.includes('--rm'));
+});

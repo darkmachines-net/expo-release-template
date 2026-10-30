@@ -9,6 +9,7 @@ import { github, loadHistory, reserve, begin, complete, perform, receipt } from 
 import { eas, publisher, readEnvironments, verifyBuildFloors, cloudBuild, verifyBuild, submit, update } from './eas.mjs';
 import { buildServer, commandBuild } from './build.mjs';
 import { connectAndDeploy } from './deploy.mjs';
+import { deployGcp } from './gcp.mjs';
 
 /** Write one fixed workflow output without allowing multiline workflow-command injection. */
 export function output(key, value) {
@@ -57,7 +58,7 @@ export async function worker(phase, root, state) {
     assert(Object.entries(identity).every(([key, value]) => saved[key] === value) && hash(saved.config) === hash(config), 'Restored context identity differs.');
     for (const [key, value] of Object.entries({ mobile: !!config.mobile, approval: selected.approvalEnvironment,
       signing: selected.signingEnvironment || selected.approvalEnvironment, submit_environment: selected.submitEnvironment || selected.approvalEnvironment,
-      deploy_environment: selected.deployEnvironment, cloud: nativeMatrix(config).some(t => t.builder === 'eas') })) output(key, value);
+      deploy_environment: selected.deployEnvironment, deploy_provider: config.server?.deployment.provider ?? 'webhook', cloud: nativeMatrix(config).some(t => t.builder === 'eas') })) output(key, value);
     return;
   }
   if (reused && phase !== 'prepare') return;
@@ -159,7 +160,9 @@ export async function worker(phase, root, state) {
         for (const alias of [`sha-${plan.source}`, 'latest']) run('skopeo', ['copy', '--all', '--authfile', auth, `docker://${image}@${digest}`, `docker://${image}:${alias}`]);
         result = { image, digest, version: plan.versions.server };
       } finally { fs.rmSync(path.dirname(auth), { recursive: true, force: true }); }
-    } else if (phase === 'server-deploy') result = connectAndDeploy(config.server.deployment);
+    } else if (phase === 'server-deploy') result = config.server.deployment.provider === 'gcp'
+      ? await deployGcp(config.server.deployment, (await receipt(client, plan, 'publish/server'))?.result, plan)
+      : connectAndDeploy(config.server.deployment);
     else result = update(plan, targetId, path.join(artifacts, `ota-${targetId}`));
     return result;
   });

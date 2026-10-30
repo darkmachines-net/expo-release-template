@@ -4,6 +4,8 @@ This package provides one reusable GitHub Actions workflow for Docker server rel
 
 The complete toolkit requires Node 22.14+; CI uses Node 24 on Windows and Linux. The pure planning engine supports Node 20+ without dependencies. The only runtime package dependency is Ajv for configuration validation.
 
+See [provider execution](src/README.md) for Cloud Run/Firebase deployment, workload identity, schema readiness, and disposable container initialization.
+
 ## Install and configure
 
 Install `@mchartier/expo-release` from a reviewed full Git SHA and use that same SHA for `.github/workflows/release.yml`. Run `node scripts/sync-engine.mjs FULL_SHA CONSUMER...` from this repository to update consumer package/workflow pins and regenerate npm locks. It copies no engine snapshots.

@@ -1,0 +1,13 @@
+# Provider execution
+
+`worker.mjs` is the fixed workflow entry point. `github.mjs` owns immutable plans, confirmed-operation receipts and retry reuse; a failed attempt never prevents a fresh release. Consumers supply metadata and validation hooks, without deployment/recovery wrappers.
+
+`deploy.mjs` supports the existing WireGuard webhook. `gcp.mjs` supports a provisioned Cloud Run API, private worker, migration job, Artifact Registry repository and Firebase Hosting site. Set `server.deployment.provider` to `gcp` with `project`, `region`, `api`, `worker`, `migrationJob`, `hostingSite`, `registry`, and the public HTTPS `origin`. Infrastructure and OAuth/store configuration remain with the application.
+
+The protected deploy environment supplies `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_RELEASE_SERVICE_ACCOUNT`. Bind federation to the consumer repository, its protected default branch and that exact environment. The caller workflow must grant `id-token: write` as well as its existing permissions. The release identity needs registry write, Cloud Run deploy/job execution, service-account use for the three runtimes, and Firebase Hosting administration. It needs no database password or AI key. Artifact production and CLI installation finish before federation credentials are admitted.
+
+Deployment consumes the confirmed GHCR publication digest, copies it without digest changes into Artifact Registry, runs the migration job, verifies worker/API startup probes and revision digests, and checks the staged API's `/api/ready`. This endpoint must report `{status:"ok",version,revision}` for the deployed release and `K_REVISION`. Only then does deployment switch traffic and publish Hosting with `pinTag:true`. Public HTTPS readback must match the same API revision. Native and OTA jobs remain gated on deployment success.
+
+An uncertain deployment has no success receipt. A job retry may repeat those provider operations; migrations must be additive and idempotent. Confirmed entire operations are reused by `perform`. Databases are never rolled back automatically. Retain compatibility with older clients and rolling service revisions.
+
+Container smoke configuration supports `services.<name>.ready` (a command run inside the dependency) and `initialize` (a command in the exact built application image, before API startup). These use an owned Docker network and disposable containers without publication credentials. No production migration is run during smoke validation.

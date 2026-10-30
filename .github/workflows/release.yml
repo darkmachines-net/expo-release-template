@@ -29,6 +29,7 @@ jobs:
       signing: ${{ steps.context.outputs.signing }}
       submit_environment: ${{ steps.context.outputs.submit_environment }}
       deploy_environment: ${{ steps.context.outputs.deploy_environment }}
+      deploy_provider: ${{ steps.context.outputs.deploy_provider }}
       cloud: ${{ steps.context.outputs.cloud }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -128,16 +129,30 @@ jobs:
     needs: [context, server-publish]
     runs-on: ubuntu-latest
     environment: ${{ needs.context.outputs.deploy_environment }}
-    permissions: { contents: write, deployments: write }
+    permissions: { contents: write, deployments: write, packages: read, id-token: write }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: *toolkit
       - uses: ./.toolkit/.github/actions/setup
         with: { state: plan }
-      - run: sudo apt-get update -qq && sudo apt-get install --no-install-recommends -y wireguard-tools
+      - if: needs.context.outputs.deploy_provider != 'gcp'
+        run: sudo apt-get update -qq && sudo apt-get install --no-install-recommends -y wireguard-tools
+      - if: needs.context.outputs.deploy_provider == 'gcp'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install --no-install-recommends -y skopeo
+          npm install --global --ignore-scripts firebase-tools@15.32.1
+      - if: needs.context.outputs.deploy_provider == 'gcp'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with: { version: '>= 500.0.0' }
+      - if: needs.context.outputs.deploy_provider == 'gcp'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
       - run: node .toolkit/bin/worker.mjs server-deploy
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GHCR_TOKEN: ${{ github.token }}
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
           DEPLOY_URL: ${{ vars.DEPLOY_URL }}
           DEPLOY_WG_ADDRESS: ${{ vars.DEPLOY_WG_ADDRESS }}
