@@ -1,4 +1,4 @@
-/** @file Deploys a confirmed immutable image through migrations, Cloud Run readiness, and revision-pinned Firebase Hosting. */
+/** @file Deploys immutable images through migrations, tagged Cloud Run readiness, and revision-pinned Firebase Hosting. */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -63,10 +63,11 @@ export async function deployGcp(spec, published, plan, env = process.env, execut
     cloud(['run', 'jobs', 'update', spec.migrationJob, `--region=${spec.region}`, `--image=${value.image}`]);
     const migrated = JSON.parse(cloud(['run', 'jobs', 'execute', spec.migrationJob, `--region=${spec.region}`, '--wait']));
     assert(migrated.status?.conditions?.some(c => c.type === 'Completed' && c.status === 'True'), 'Migration execution did not complete.');
-    cloud(['run', 'services', 'update', spec.worker, `--region=${spec.region}`, `--image=${value.image}`]);
+    const tagName = `release-${plan.run}`;
+    // A revision without traffic or a tag stays retired and never becomes the latest ready revision.
+    cloud(['run', 'services', 'update', spec.worker, `--region=${spec.region}`, `--image=${value.image}`, '--no-traffic', `--tag=${tagName}`]);
     const worker = ready(spec.worker);
     cloud(['run', 'services', 'update-traffic', spec.worker, `--region=${spec.region}`, `--to-revisions=${worker.revision}=100`]);
-    const tagName = `release-${plan.run}`;
     cloud(['run', 'services', 'update', spec.api, `--region=${spec.region}`, `--image=${value.image}`, '--no-traffic', `--tag=${tagName}`]);
     const api = ready(spec.api), url = api.service.status.traffic?.find(t => t.tag === tagName && t.revisionName === api.revision)?.url;
     assert(url?.startsWith('https://') && new URL(url).hostname.endsWith('.run.app'), 'Missing verified revision URL.');
