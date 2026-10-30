@@ -1,4 +1,4 @@
-/** @file Tests immutable GCP rollout ordering and failure gates without cloud access, Docker, or provider credentials. */
+/** @file Tests tagged GCP activation, immutable rollout ordering and failure gates without cloud or provider access. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,13 +9,14 @@ import { plan } from './helpers.mjs';
 function harness() {
   const release = plan(), digest = 'sha256:' + 'd'.repeat(64);
   const spec = { provider: 'gcp', project: 'example-project', region: 'us-central1', api: 'example-api', worker: 'example-worker', migrationJob: 'example-migrate', hostingSite: 'example-project', registry: 'us-central1-docker.pkg.dev/example-project/application/server', origin: 'https://example.app' };
-  const published = { image: release.config.server.image, digest, version: release.versions.server }, image = spec.registry + '@' + digest, calls = [];
+  const published = { image: release.config.server.image, digest, version: release.versions.server }, image = spec.registry + '@' + digest, calls = [], activated = new Set();
   /** Emulate only bounded provider readback; no commands are executed. */
   const execute = (binary, args, options) => {
     calls.push({ binary, args, options });
     if (args.includes('print-access-token')) return 'synthetic-token';
     if (binary === 'skopeo' && args[0] === 'inspect') return args.includes('--raw') ? JSON.stringify({ config: { digest } }) : digest;
-    if (args[0] === 'run' && args[1] === 'services' && args[2] === 'describe') return JSON.stringify({ status: { latestReadyRevisionName: args[3] + '-revision', latestCreatedRevisionName: args[3] + '-revision', conditions: [{ type: 'Ready', status: 'True' }], traffic: [{ tag: 'release-' + release.run, revisionName: spec.api + '-revision', url: 'https://verified.run.app' }] } });
+    if (args[1] === 'services' && args[2] === 'update' && args.includes('--tag=release-' + release.run)) activated.add(args[3]);
+    if (args[0] === 'run' && args[1] === 'services' && args[2] === 'describe') return JSON.stringify({ status: { latestReadyRevisionName: args[3] + (activated.has(args[3]) ? '-revision' : '-previous'), latestCreatedRevisionName: args[3] + '-revision', conditions: [{ type: 'Ready', status: 'True' }], traffic: [{ tag: 'release-' + release.run, revisionName: args[3] + '-revision', url: 'https://verified.run.app' }] } });
     if (args[1] === 'revisions') return JSON.stringify({ metadata: { name: args[3] }, status: { imageDigest: image } });
     if (args[1] === 'jobs' && args[2] === 'execute') return JSON.stringify({ metadata: { name: 'migration-execution' }, status: { conditions: [{ type: 'Completed', status: 'True' }] } });
     if (binary === 'firebase') {
@@ -34,6 +35,10 @@ test('migrates, verifies exact API/worker images and readiness, then publishes p
   const migration = h.calls.findIndex(c => c.args?.includes('execute')), worker = h.calls.findIndex(c => c.args?.includes(h.spec.worker) && c.args.includes('update'));
   const staged = h.calls.findIndex(c => c.health?.startsWith('https://verified')), hosting = h.calls.findIndex(c => c.binary === 'firebase');
   assert.ok(migration < worker && worker < staged && staged < hosting);
+  assert.ok(h.calls[worker].args.includes('--no-traffic'));
+  const workerVerified = h.calls.findIndex(c => c.args?.[1] === 'revisions' && c.args[3] === h.spec.worker + '-revision');
+  const workerTraffic = h.calls.findIndex(c => c.args?.includes(h.spec.worker) && c.args.includes('update-traffic'));
+  assert.ok(worker < workerVerified && workerVerified < workerTraffic && workerTraffic < staged);
   assert.equal(h.calls.at(-1).health, h.spec.origin + '/api/ready');
   const auth = h.calls.find(c => c.binary === 'skopeo').args; assert.equal(fs.existsSync(auth[auth.indexOf('--authfile') + 1]), false);
 });
