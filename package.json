@@ -12,6 +12,7 @@
     ".": "./src/index.mjs",
     "./engine": "./src/engine.mjs",
     "./expo": "./src/consumer/expo.cjs",
+    "./development": "./src/preview.mjs",
     "./package.json": "./package.json",
     "./schemas/*": "./schemas/*"
   },

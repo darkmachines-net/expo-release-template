@@ -1,4 +1,4 @@
-/** @file Publish a developer's current working copy to a unique preview branch without changing any release destination. */
+/** @file Publish working-copy previews and prepare portable native development servers with explicit connection settings. */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +9,7 @@ import { readEnvironments } from './eas.mjs';
 import { assert } from './engine.mjs';
 import { git, run, writeJson, seal, sourceEnvironment } from './io.mjs';
 import { createRequire } from 'node:module';
+import { isIPv4 } from 'node:net';
 
 /** Build a local preview identity that explicitly records uncommitted work and never targets a persistent channel. */
 export function localPreviewPlan(config, { source, dirty, platform, id = randomUUID() }) {
@@ -44,12 +45,26 @@ export function preview(root, platform = 'android', adapters = {}) {
   }
 }
 
-/** Start Metro with the development identity and declared public configuration on Windows or POSIX. */
-export function startDevelopment(root) {
+/**
+ * Prepare Metro argv and a credential-free environment for a consumer-owned local process supervisor.
+ * Public overrides may supply local API/proxy settings; declared development identity takes precedence.
+ * An explicit port is forwarded unchanged; host is an advertised LAN IPv4 address, not a binding URL.
+ */
+export function developmentServer(root, { port, host, clear = false, web = false, publicEnvironment = {} } = {}) {
   const config = loadConfig(root); developmentProvider(config);
   const app = path.resolve(root, config.mobile.directory), require = createRequire(path.join(app, 'package.json'));
   const cli = path.join(path.dirname(require.resolve('expo/package.json')), 'bin/cli');
-  const env = sourceEnvironment({ ...config.development.publicEnvironment, EAS_BUILD_PROFILE: config.development.easProfile });
+  assert(port === undefined || /^\d+$/.test(String(port)) && Number(port) >= 1024 && Number(port) <= 65535, 'Development port must be between 1024 and 65535.');
+  assert(host === undefined || isIPv4(host) && !/^(0\.|127\.|169\.254\.)/.test(host), 'Development host must be a LAN IPv4 address.');
+  const env = sourceEnvironment({ ...publicEnvironment, ...config.development.publicEnvironment,
+    EAS_BUILD_PROFILE: config.development.easProfile, ...(host ? { REACT_NATIVE_PACKAGER_HOSTNAME: host } : {}) });
   delete env.CI;
-  run(process.execPath, [cli, 'start', '--dev-client'], { cwd: app, env, stdio: 'inherit' });
+  return { command: process.execPath, args: [cli, 'start', '--dev-client', '--lan',
+    ...(port === undefined ? [] : ['--port', String(port)]), ...(clear ? ['--clear'] : []), ...(web ? ['--web'] : [])], cwd: app, env };
+}
+
+/** Start Metro with the shared development identity and optional explicit port/LAN host on Windows or POSIX. */
+export function startDevelopment(root, options) {
+  const server = developmentServer(root, options);
+  run(server.command, server.args, { cwd: server.cwd, env: server.env, stdio: 'inherit' });
 }
