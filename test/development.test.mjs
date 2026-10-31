@@ -1,4 +1,4 @@
-/** @file Verify source pinning, client/preview runtime pairing, publication gates, isolation and separate store destinations. */
+/** @file Verify native dev-server settings, source pinning, client/preview pairing, publication gates and credential isolation. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,7 +8,7 @@ import YAML from 'yaml';
 import { developmentPlan, developmentProvider, resolveDevelopmentSource, developmentWorker, verifyDevelopmentProfile, verifyDevelopmentBuild, publishDevelopment } from '../src/development.mjs';
 import { seal, writeJson, readJson } from '../src/io.mjs';
 import { submit } from '../src/eas.mjs';
-import { localPreviewPlan, preview } from '../src/preview.mjs';
+import { localPreviewPlan, preview, developmentServer } from '../src/preview.mjs';
 import { config, plan, temporary, repository } from './helpers.mjs';
 const { developmentConfig } = createRequire(import.meta.url)('../src/consumer/expo.cjs');
 
@@ -19,6 +19,25 @@ function fixture() {
     platforms: ['android', 'ios'], publicEnvironment: { EXPO_RELEASE_VARIANT: 'development' } };
   return value;
 }
+
+test('native launch preserves development identity while forwarding local ports and public URLs', t => {
+  const root = temporary(t), value = fixture();
+  delete value.mobile.platforms;
+  writeJson(path.join(root, 'release.config.json'), value);
+  writeJson(path.join(root, 'package.json'), { name: 'fixture' });
+  writeJson(path.join(root, 'node_modules/expo/package.json'), { name: 'expo' });
+  const server = developmentServer(root, { port: 8123, host: '192.168.1.20', clear: true, web: true,
+    publicEnvironment: { EXPO_PUBLIC_API_URL: 'http://192.168.1.20:8800', EXPO_RELEASE_VARIANT: 'production' } });
+  assert.deepEqual(server.args.slice(1), ['start', '--dev-client', '--lan', '--port', '8123', '--clear', '--web']);
+  assert.equal(server.cwd, root); assert.equal(server.command, process.execPath);
+  assert.equal(server.env.EXPO_RELEASE_VARIANT, 'development'); assert.equal(server.env.EAS_BUILD_PROFILE, 'development');
+  assert.equal(server.env.EXPO_PUBLIC_API_URL, 'http://192.168.1.20:8800');
+  assert.equal(server.env.REACT_NATIVE_PACKAGER_HOSTNAME, '192.168.1.20'); assert.equal(server.env.EXPO_NO_DOTENV, '1');
+  assert.equal(server.env.CI, undefined); assert.equal(server.env.OPENAI_API_KEY, undefined);
+  for (const port of ['8081bad', '0', '65536', '-1']) assert.throws(() => developmentServer(root, { port }), /port must/);
+  for (const host of ['localhost', 'http://192.168.1.20', '127.0.0.1', '0.0.0.0']) assert.throws(() => developmentServer(root, { host }), /host must/);
+  assert.throws(() => developmentServer(root, { publicEnvironment: { PRIVATE_KEY: 'secret' } }), /Private/);
+});
 
 test('development plans target an explicit source and unique branch without release operations', () => {
   const value = fixture(), identity = { source: 'a'.repeat(40), toolkit: 'b'.repeat(40), run: '123', repository: value.repository };
