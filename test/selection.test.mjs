@@ -1,4 +1,4 @@
-/** @file Independent selection and monotonic versions from successful baselines, including fresh releases after failures. */
+/** @file Independent selection, monotonic versions and stale-native OTA rejection across failed or successful builds. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { selectRelease, increment, nextPair, compareVersions, assertCompatible } from '../src/engine.mjs';
@@ -41,6 +41,28 @@ test('compatibility changes build all enabled platforms with a new major', () =>
   assert.deepEqual(result.ota, []);
   assert.ok(result.operations.includes('production/build/android'));
   assert.ok(result.operations.includes('production/build/ios'));
+});
+
+test('a bundle importing a new native module cannot target old clients, even after a failed rebuild', () => {
+  const input = observation(), previous = history();
+  input.family = 'with-ExpoApplication'; input.js.android = input.js.ios = 'imports-ExpoApplication';
+  input.fingerprints.production = { android: 'c'.repeat(40), ios: 'd'.repeat(40) };
+  const first = selectRelease(config(), 'production', input, previous);
+  assert.equal(first.runtime, '2'); assert.equal(first.native, true); assert.deepEqual(first.ota, []);
+  // A reservation advances the family/version, but an unsuccessful build leaves the old native baselines.
+  previous.mobile = { version: first.versions.mobile, family: input.family };
+  const retry = selectRelease(config(), 'production', input, previous);
+  assert.equal(retry.runtime, '2'); assert.equal(retry.native, true); assert.deepEqual(retry.ota, []);
+  for (const platform of ['android', 'ios']) {
+    const stale = previous.baselines[`production/build/${platform}`];
+    const required = { runtime: retry.runtime, fingerprint: input.fingerprints.production[platform] };
+    assert.throws(() => assertCompatible(stale, required), /compatibility/);
+    assert.throws(() => assertCompatible({ ...stale, runtime: required.runtime }, required), /compatibility/);
+    previous.baselines[`production/build/${platform}`] = required;
+  }
+  // Only confirmed matching native builds make the new bundle eligible for that runtime.
+  const compatible = selectRelease(config(), 'production', input, previous);
+  assert.equal(compatible.native, false); assert.deepEqual(compatible.ota, ['android', 'ios']);
 });
 
 test('requested compatible rebuild allocates minor and OTA for the same runtime', () => {
