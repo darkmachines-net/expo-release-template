@@ -1,9 +1,9 @@
-/** @file Check fixed ordering, mixed native credential boundaries, retry reuse and upstream setup. */
+/** @file Check post-approval delivery ordering, mixed native credential boundaries, retry reuse and upstream setup. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import YAML from 'yaml';
-const workflow = YAML.parse(fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8'));
+const workflow = YAML.parse(fs.readFileSync(new URL('../.github/workflows/delivery.yml', import.meta.url), 'utf8'));
 const setup = YAML.parse(fs.readFileSync(new URL('../.github/actions/setup/action.yml', import.meta.url), 'utf8'));
 const jobs = workflow.jobs;
 

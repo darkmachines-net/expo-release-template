@@ -1,4 +1,4 @@
-/** @file Validate release destinations and native builder groups; EAS owns build/submit profiles. */
+/** @file Validate separate release/development destinations and native builder groups; EAS owns build profiles. */
 import Ajv from 'ajv';
 import { readJson, within, sourceEnvironment, hash } from '../io.mjs';
 import { assert } from '../engine.mjs';
@@ -18,6 +18,8 @@ export function loadConfig(root = process.cwd()) {
   }
   if (value.development) {
     assert(value.mobile && !value.profiles.development, 'Development previews are separate from release profiles.');
+    assert(!value.development.channel || !Object.values(value.profiles).some(profile => profile.channel === value.development.channel),
+      'Development channel must differ from release channels.');
     sourceEnvironment(value.development.publicEnvironment);
     assert(value.development.publicEnvironment.EXPO_RELEASE_VARIANT === 'development', 'Development needs its explicit native variant.');
   }

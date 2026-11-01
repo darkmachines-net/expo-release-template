@@ -10,7 +10,7 @@ See [provider execution](src/README.md) for Cloud Run/Firebase deployment, workl
 
 Install `@mchartier/expo-release` from a reviewed full Git SHA and use that same SHA for `.github/workflows/release.yml`. Run `node scripts/sync-engine.mjs FULL_SHA CONSUMER...` from this repository to update consumer package/workflow pins and regenerate npm locks. It copies no engine snapshots.
 
-Add a small [release.config.json](schemas/release.config.schema.json), an EAS profile for each release destination, and a manual `workflow_dispatch` caller. Profiles name the EAS environment/channel and existing protected GitHub environments. The reusable workflow verifies the protected default-branch invocation and serializes all releases in the repository. Dispatch only `profile` and optional `rebuild`.
+Add a small [release.config.json](schemas/release.config.schema.json), an EAS profile for each release destination, and a `workflow_dispatch` caller. Profiles name the EAS environment/channel and existing protected GitHub environments. For development-first continuous delivery, add a default-branch `push` trigger and the [promotion configuration](src/consumer/README.md#continuous-delivery-to-beta). The reusable workflow verifies the protected default-branch invocation and serializes post-approval releases. Call it with `profile` and optional `rebuild`.
 
 Use `npm run release -- validate` to check configuration. `npm run release -- plan --profile production` previews selection by reading GitHub history and EAS public environment values. It requires `gh` authentication and the pinned official EAS CLI on PATH. `--history CONTEXT.json` permits an offline preview with explicit `history` and `environments`. Planning never reserves versions or publishes anything.
 
@@ -20,7 +20,7 @@ See the [serverless example](examples/expo-only/README.md), [consumer contract a
 
 ## Development, beta and production
 
-Use three build profiles but only two persistent release channels. `development` is a custom Expo development client that opens a selected preview; `beta` and `production` are release-mode builds following their corresponding channels. Development is configured separately from `profiles`, so previews do not allocate release versions, establish release baselines, deploy servers or submit to stores.
+Use three build profiles. `development` is a custom Expo development client that opens compatible previews, including an optional persistent development channel; `beta` and `production` are release-mode builds following their corresponding channels. Development is configured separately from `profiles`, so preparation does not allocate release versions, advance release baselines, deploy servers or submit to stores.
 
 For the manual pre-review workflow and native-client setup, see [development previews](src/consumer/README.md#development-previews). The optional [Development workflow](.github/workflows/development.yml) builds an installable client with a matching hosted preview, or publishes a preview for an existing compatible client. Store releases continue through [release.yml](.github/workflows/release.yml).
 
