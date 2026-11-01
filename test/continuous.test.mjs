@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import YAML from 'yaml';
 import { developmentScope, developmentHistory, selectDevelopment, performDevelopment } from '../src/development-history.mjs';
 import { verifyPromotionEnvironments } from '../src/continuous.mjs';
+import { verifyDevelopmentSelection } from '../src/development.mjs';
 import { config } from './helpers.mjs';
 
 /** Return a source-bound automatic development candidate. */
@@ -37,6 +38,18 @@ test('first native inputs build and publish, JS-only changes publish, and unchan
   assert.deepEqual(selectDevelopment('native-A', 'bundle-B', history), { build: false, update: true });
   assert.deepEqual(selectDevelopment('native-B', 'bundle-A', history), { build: true, update: true });
   assert.deepEqual(selectDevelopment('native-A', 'bundle-A', { build: history.build }), { build: false, update: true });
+});
+
+test('source-produced selections cannot redirect trusted publication or skip native compatibility work', () => {
+  const context = { ...candidate(), operation: 'auto', history: {} };
+  delete context.runtime; delete context.bundle;
+  const plan = { ...context, runtime: 'a'.repeat(40), bundle: 'b'.repeat(64), buildRequired: true, updateRequired: true };
+  assert.equal(verifyDevelopmentSelection(plan, context), plan);
+  for (const change of [{ source: 'c'.repeat(40) }, { channel: 'production' }, { operation: 'update' },
+    { config: { ...context.config, mobile: { ...context.config.mobile, projectId: 'other' } } }, { runtime: 'major' }])
+    assert.throws(() => verifyDevelopmentSelection({ ...plan, ...change }, context), /trusted context or runtime/);
+  for (const change of [{ buildRequired: false }, { updateRequired: false }])
+    assert.throws(() => verifyDevelopmentSelection({ ...plan, ...change }, context), /bypassed required/);
 });
 
 test('confirmed native success survives OTA failure and does not block a fresh candidate', async () => {

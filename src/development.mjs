@@ -1,4 +1,4 @@
-/** @file Pair development clients with sealed previews and default-branch channel updates, without store releases. */
+/** @file Select development candidates, bind source-produced artifacts to trusted context, and publish compatible previews. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -43,6 +43,17 @@ export function developmentPlan(config, identity, { source = identity.source, op
     && !Object.values(config.profiles).some(profile => profile.channel === channel), 'Channel updates require the configured development destination and workflow commit.');
   return { ...identity, config, source, workflowSource: identity.source, operation, platform,
     ...(channel ? { channel } : { branch: `preview-${identity.run}-${attempt}` }), profile: 'development' };
+}
+
+/** Accept source-produced selection only when it preserves trusted destinations and the required native/update gates. */
+export function verifyDevelopmentSelection(plan, context) {
+  const { runtime, bundle, buildRequired, updateRequired, ...original } = plan;
+  assert(hash(original) === hash(context) && /^[a-f0-9]{40,64}$/.test(runtime ?? ''), 'Development selection changed its trusted context or runtime.');
+  assert(context.operation !== 'auto' || /^[a-f0-9]{64}$/.test(bundle ?? ''), 'Missing development bundle input identity.');
+  const selected = context.operation === 'auto' ? selectDevelopment(runtime, bundle, context.history)
+    : { build: context.operation === 'build', update: true };
+  assert(buildRequired === selected.build && updateRequired === selected.update, 'Development selection bypassed required build or update work.');
+  return plan;
 }
 
 /** Reject store profiles, implicit channels and configuration overrides before authenticated EAS evaluation. */
@@ -133,13 +144,15 @@ export async function developmentWorker(phase, root, state) {
     output('approval', config.development.approvalEnvironment); output('source', plan.source);
     return;
   }
-  const plan = ['build', 'publish'].includes(phase) ? readJson('artifacts/development-plan.json') : readJson(file), spec = plan.config.development;
+  const context = readJson(file);
+  const plan = ['build', 'publish'].includes(phase) ? verifyDevelopmentSelection(readJson('artifacts/development-plan.json'), context) : context;
+  const spec = plan.config.development;
   const identity = hostedIdentity(plan.config, process.env, ['workflow_dispatch', 'push']);
   assert(plan.run === identity.run && plan.toolkit === identity.toolkit && plan.workflowSource === identity.source
     && plan.repository === identity.repository, 'Development context belongs to another run.');
   if (process.env.RELEASE_REUSE === 'true') {
     if (phase === 'export') {
-      const saved = readJson('artifacts/development-plan.json');
+      const saved = verifyDevelopmentSelection(readJson('artifacts/development-plan.json'), context);
       output('build', saved.buildRequired); output('update', saved.updateRequired);
     }
     return;
