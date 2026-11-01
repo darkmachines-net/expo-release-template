@@ -12,6 +12,7 @@
     ".": "./src/index.mjs",
     "./engine": "./src/engine.mjs",
     "./expo": "./src/consumer/expo.cjs",
+    "./register": { "types": "./src/consumer/register.d.ts", "default": "./src/consumer/register.cjs" },
     "./development": { "types": "./src/preview.d.ts", "default": "./src/preview.mjs" },
     "./package.json": "./package.json",
     "./schemas/*": "./schemas/*"
@@ -23,6 +24,18 @@
   ],
   "dependencies": {
     "ajv": "8.20.0"
+  },
+  "peerDependencies": {
+    "expo": "*",
+    "expo-modules-core": "*",
+    "react": "*",
+    "react-native": "*"
+  },
+  "peerDependenciesMeta": {
+    "expo": { "optional": true },
+    "expo-modules-core": { "optional": true },
+    "react": { "optional": true },
+    "react-native": { "optional": true }
   },
   "devDependencies": {
     "eslint": "10.13.0",
