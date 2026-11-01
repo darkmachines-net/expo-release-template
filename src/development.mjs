@@ -1,4 +1,4 @@
-/** @file Select development candidates, bind source-produced artifacts to trusted context, and publish compatible previews. */
+/** @file Select development candidates, reconcile compatible clients, bind trusted artifacts and publish current-source previews. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -10,6 +10,8 @@ import { eas, publisher, readEnvironments } from './eas.mjs';
 import { hostedIdentity, output } from './worker.mjs';
 import { github } from './github.mjs';
 import { developmentHistory, selectDevelopment, performDevelopment } from './development-history.mjs';
+import { developmentBuild, verifyDevelopmentBuild } from './development-build.mjs';
+export { verifyDevelopmentBuild } from './development-build.mjs';
 
 /** Build an ephemeral provider configuration; development never becomes a release selection profile. */
 export function developmentProvider(config) {
@@ -92,18 +94,6 @@ export function inspectDevelopment(root, plan) {
   const { runtimeVersion } = JSON.parse(run(process.execPath, [resolver, 'runtimeversion:resolve', '--platform', plan.platform, '--workflow', 'managed'], { cwd: app, env }));
   assert(/^[a-f0-9]{40,64}$/.test(runtimeVersion), 'Missing development fingerprint runtime.');
   return { app, cli, env, expo: { ...expo, runtimeVersion }, runtimeVersion, applicationId, updatesVersion: require('expo-updates/package.json').version };
-}
-
-/** Verify a finished development client's source, identity and runtime against its exported preview. */
-export function verifyDevelopmentBuild(build, plan, expo) {
-  const applicationId = plan.platform === 'android' ? expo.android?.package : expo.ios?.bundleIdentifier;
-  assert(build?.id && build.status === 'FINISHED' && build.app?.id === plan.config.mobile.projectId
-    && build.gitCommitHash === plan.source && build.appIdentifier === applicationId && applicationId?.endsWith('.development')
-    && build.buildProfile === plan.config.development.easProfile && build.platform?.toLowerCase() === plan.platform
-    && build.distribution === 'INTERNAL' && !build.isForIosSimulator
-    && build.runtime?.version === expo.runtimeVersion && /^[a-f0-9]{40,64}$/.test(expo.runtimeVersion),
-  'Development build identity or preview runtime differs.');
-  return build;
 }
 
 /** Publish sealed bytes to a preview branch or declared development channel; builds require a matching client. */
@@ -206,13 +196,9 @@ export async function developmentWorker(phase, root, state) {
   const bundle = readJson(path.join(directory, 'development.json'));
   assert(bundle.platform === plan.platform && hash(bundle.expo) === hash(info.expo), 'Development export configuration changed before build.');
   let build;
-  /** Build once from this source, then confirm the native identity and exported runtime before recording success. */
+  /** Reuse a compatible automatic client or build once, then record verified native availability. */
   const create = async () => {
-    const result = eas(['build', '--platform', plan.platform, '--profile', spec.easProfile, '--non-interactive', '--wait', '--json'], info.app,
-      { environment: { ...info.env, EAS_NO_VCS: '0' } });
-    const builds = Array.isArray(result) ? result : [result];
-    assert(builds.length === 1, 'Expected one development build.');
-    build = verifyDevelopmentBuild(builds[0], plan, bundle.expo);
+    build = await developmentBuild(info, plan);
     return `https://expo.dev/accounts/${plan.config.mobile.owner}/projects/${plan.config.mobile.slug}/builds/${build.id}`;
   };
   const url = plan.operation === 'auto' ? await performDevelopment(github(plan.repository), plan, 'build', create) : await create();
@@ -222,5 +208,5 @@ export async function developmentWorker(phase, root, state) {
     finally { fs.rmSync(inert, { recursive: true, force: true }); }
   }
   writeJson('artifacts/development-build.json', build);
-  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Created [development build](https://expo.dev/accounts/${plan.config.mobile.owner}/projects/${plan.config.mobile.slug}/builds/${build.id}). Its hosted preview is ready only after the publish job succeeds.\n\nSource: ${plan.source}; native fingerprint: ${info.runtimeVersion}.\n`);
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Verified [development client](https://expo.dev/accounts/${plan.config.mobile.owner}/projects/${plan.config.mobile.slug}/builds/${build.id}). Its hosted preview is ready only after the publish job succeeds.\n\nPreview source: ${plan.source}; client source: ${build.gitCommitHash}; native fingerprint: ${info.runtimeVersion}.\n`);
 }
