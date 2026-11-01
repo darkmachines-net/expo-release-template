@@ -1,18 +1,20 @@
-# Pair custom dev clients with compatible hosted previews, or publish previews for existing clients.
+# Prepare changed Dev clients and OTA bundles before promotion, preserving manual previews and per-platform retries.
 name: Expo development preview
 on:
   workflow_call:
     inputs:
       operation: { type: string, required: true }
       platform: { type: string, required: true }
+      channel: { description: 'Declared development channel; blank publishes an isolated preview', type: string, default: '' }
       source: { description: 'Source branch or full commit SHA; blank uses the dispatch commit', type: string, default: '' }
     secrets:
       EXPO_TOKEN: { required: true }
 permissions: { contents: read }
-concurrency: { group: 'expo-development-${{ inputs.platform }}', cancel-in-progress: false }
+concurrency: { group: 'expo-development-${{ inputs.platform }}', cancel-in-progress: false, queue: max }
 jobs:
   context:
     runs-on: ubuntu-latest
+    permissions: { contents: read, deployments: read }
     outputs:
       approval: ${{ steps.context.outputs.approval }}
       source: ${{ steps.context.outputs.source }}
@@ -20,16 +22,18 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: &toolkit { repository: darkmachines-net/expo-release-template, ref: '${{ job.workflow_sha }}', path: .toolkit, persist-credentials: false }
       - uses: ./.toolkit/.github/actions/setup
-        with: { reuse: development-context }
+        with: { reuse: 'development-context-${{ inputs.platform }}' }
       - id: context
         run: node .toolkit/bin/development.mjs context
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           PREVIEW_OPERATION: ${{ inputs.operation }}
           PREVIEW_PLATFORM: ${{ inputs.platform }}
           PREVIEW_SOURCE: ${{ inputs.source }}
+          PREVIEW_CHANNEL: ${{ inputs.channel }}
       - if: env.RELEASE_REUSE != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with: { name: 'development-context', path: state, if-no-files-found: error }
+        with: { name: 'development-context-${{ inputs.platform }}', path: state, if-no-files-found: error }
   environment:
     needs: context
     runs-on: ubuntu-latest
@@ -38,55 +42,61 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: *toolkit
       - uses: ./.toolkit/.github/actions/setup
-        with: { eas: 'true', reuse: development-environment }
+        with: { eas: 'true', reuse: 'development-environment-${{ inputs.platform }}' }
       - if: env.RELEASE_REUSE != 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with: { name: 'development-context', path: state }
+        with: { name: 'development-context-${{ inputs.platform }}', path: state }
       - run: node .toolkit/bin/development.mjs environment
-        env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}' }
+        env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}', GITHUB_TOKEN: '${{ github.token }}' }
       - if: env.RELEASE_REUSE != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with: { name: 'development-environment', path: state, if-no-files-found: error }
+        with: { name: 'development-environment-${{ inputs.platform }}', path: state, if-no-files-found: error }
   build:
     needs: [context, environment, export]
-    if: inputs.operation == 'build'
+    if: needs.export.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    permissions: { contents: read, deployments: write }
     environment: ${{ needs.context.outputs.approval }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: *toolkit
       - uses: ./.toolkit/.github/actions/setup
-        with: { source: '${{ needs.context.outputs.source }}', eas: 'true', reuse: development-build, directory: artifacts }
+        with: { source: '${{ needs.context.outputs.source }}', eas: 'true', reuse: 'development-build-${{ inputs.platform }}', directory: artifacts }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with: { name: 'development-environment', path: state }
+        with: { name: 'development-environment-${{ inputs.platform }}', path: state }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with: { name: 'development-export', path: artifacts }
+        with: { name: 'development-export-${{ inputs.platform }}', path: artifacts }
       - run: node .toolkit/bin/development.mjs install
       - run: node .toolkit/bin/development.mjs build
-        env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}' }
+        env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}', GITHUB_TOKEN: '${{ github.token }}' }
       - if: env.RELEASE_REUSE != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with: { name: 'development-build', path: artifacts/development-build.json, if-no-files-found: error }
+        with: { name: 'development-build-${{ inputs.platform }}', path: artifacts/development-build.json, if-no-files-found: error }
   export:
     needs: [context, environment]
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      build: ${{ steps.export.outputs.build }}
+      update: ${{ steps.export.outputs.update }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: *toolkit
       - uses: ./.toolkit/.github/actions/setup
-        with: { source: '${{ needs.context.outputs.source }}', reuse: development-export, directory: artifacts }
+        with: { source: '${{ needs.context.outputs.source }}', reuse: 'development-export-${{ inputs.platform }}', directory: artifacts }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with: { name: 'development-environment', path: state }
+        with: { name: 'development-environment-${{ inputs.platform }}', path: state }
       - run: node .toolkit/bin/development.mjs install
-      - run: node .toolkit/bin/development.mjs export
+      - id: export
+        run: node .toolkit/bin/development.mjs export
       - if: env.RELEASE_REUSE != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with: { name: 'development-export', path: artifacts, if-no-files-found: error }
+        with: { name: 'development-export-${{ inputs.platform }}', path: artifacts, if-no-files-found: error }
   publish:
+    permissions: { contents: read, deployments: write }
     needs: [context, export, build]
-    if: ${{ !cancelled() && needs.export.result == 'success' && (needs.build.result == 'success' || (inputs.operation == 'update' && needs.build.result == 'skipped')) }}
+    if: ${{ !cancelled() && needs.export.result == 'success' && needs.export.outputs.update == 'true' && (needs.build.result == 'success' || (needs.export.outputs.build != 'true' && needs.build.result == 'skipped')) }}
     runs-on: ubuntu-latest
     environment: ${{ needs.context.outputs.approval }}
     steps:
@@ -95,11 +105,11 @@ jobs:
       - uses: ./.toolkit/.github/actions/setup
         with: { eas: 'true' }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with: { name: 'development-environment', path: state }
+        with: { name: 'development-environment-${{ inputs.platform }}', path: state }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with: { name: 'development-export', path: artifacts }
-      - if: inputs.operation == 'build'
+        with: { name: 'development-export-${{ inputs.platform }}', path: artifacts }
+      - if: needs.export.outputs.build == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with: { name: 'development-build', path: artifacts }
+        with: { name: 'development-build-${{ inputs.platform }}', path: artifacts }
       - run: node .toolkit/bin/development.mjs publish
-        env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}' }
+        env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}', GITHUB_TOKEN: '${{ github.token }}' }

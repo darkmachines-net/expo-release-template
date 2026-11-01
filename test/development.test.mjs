@@ -1,4 +1,4 @@
-/** @file Verify native dev-server settings, source pinning, client/preview pairing, publication gates and credential isolation. */
+/** @file Verify protected channel updates, platform artifact isolation, source pinning, client pairing and credential isolation. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,6 +8,8 @@ import YAML from 'yaml';
 import { developmentPlan, developmentProvider, resolveDevelopmentSource, developmentWorker, verifyDevelopmentProfile, verifyDevelopmentBuild, publishDevelopment } from '../src/development.mjs';
 import { seal, writeJson, readJson } from '../src/io.mjs';
 import { submit } from '../src/eas.mjs';
+import { hostedIdentity } from '../src/worker.mjs';
+import { loadConfig } from '../src/consumer/config.mjs';
 import { localPreviewPlan, preview, developmentServer } from '../src/preview.mjs';
 import { config, plan, temporary, repository } from './helpers.mjs';
 const { developmentConfig } = createRequire(import.meta.url)('../src/consumer/expo.cjs');
@@ -50,6 +52,33 @@ test('development plans target an explicit source and unique branch without rele
     assert.throws(() => developmentPlan(value, identity, { operation: 'build', platform: 'android', attempt: '1', ...change }));
 });
 
+test('development channel updates only accept the workflow commit and a destination separate from store channels', t => {
+  const value = fixture(), identity = { source: 'a'.repeat(40), toolkit: 'b'.repeat(40), run: '123', repository: value.repository };
+  value.development.channel = 'development';
+  const request = { operation: 'update', platform: 'android', attempt: '1', channel: 'development' };
+  const update = developmentPlan(value, identity, request);
+  assert.equal(update.channel, 'development'); assert.equal(update.branch, undefined); assert.equal(update.source, identity.source);
+  for (const change of [{ source: 'c'.repeat(40) }, { operation: 'build' }, { channel: 'production' }, { channel: 'other' }])
+    assert.throws(() => developmentPlan(value, identity, { ...request, ...change }), /configured development destination/);
+  assert.match(localPreviewPlan(value, { source: identity.source, platform: 'ios' }).branch, /^preview-/);
+  const root = temporary(t); delete value.mobile.platforms;
+  writeJson(path.join(root, 'release.config.json'), value); assert.equal(loadConfig(root).development.channel, 'development');
+  value.development.channel = value.profiles.production.channel;
+  writeJson(path.join(root, 'release.config.json'), value);
+  assert.throws(() => loadConfig(root), /differ from release channels/);
+  assert.throws(() => developmentPlan(value, identity, { ...request, channel: value.development.channel }), /configured development destination/);
+});
+
+test('protected default-branch pushes require an explicit continuous-delivery opt-in', () => {
+  const value = fixture(), env = { GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GITHUB_REPOSITORY: value.repository,
+    GITHUB_SHA: 'a'.repeat(40), TOOLKIT_SHA: 'b'.repeat(40), GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1' };
+  const events = ['workflow_dispatch', 'push'];
+  assert.equal(hostedIdentity(value, env, events).source, env.GITHUB_SHA);
+  assert.throws(() => hostedIdentity(value, env), /protected default-branch/);
+  for (const change of [{ GITHUB_EVENT_NAME: 'pull_request' }, { GITHUB_REF: 'refs/heads/feature' }, { GITHUB_REPOSITORY: 'fork/app' }])
+    assert.throws(() => hostedIdentity(value, { ...env, ...change }, events), /protected default-branch/);
+});
+
 test('development changes installed identity and uses fingerprint previews without changing release config', () => {
   const original = { name: 'App', slug: 'example', scheme: 'app', android: { package: 'app.example', intentFilters: [{}] },
     ios: { bundleIdentifier: 'app.example', associatedDomains: ['applinks:example.test'] },
@@ -72,10 +101,12 @@ test('development rejects store, channel, version and native platform overrides'
     assert.throws(() => verifyDevelopmentProfile({ build: { development: { ...profile, ...change } } }, spec));
 });
 
-for (const operation of ['build', 'update']) test(`${operation} publishes verified preview bytes from an inert project and rejects tampering`, t => {
+for (const mode of ['build', 'update', 'channel']) test(`${mode} publishes verified development bytes from an inert project and rejects tampering`, t => {
   const cfg = fixture(), directory = path.join(temporary(t), 'bundle');
+  const operation = mode === 'channel' ? 'update' : mode;
+  cfg.development.channel = 'development';
   const value = developmentPlan(cfg, { source: 'a'.repeat(40), toolkit: 'b'.repeat(40), run: '123', repository: cfg.repository },
-    { operation, platform: 'android', attempt: '1' });
+    { operation, platform: 'android', attempt: '1', channel: mode === 'channel' ? 'development' : '' });
   const runtime = 'c'.repeat(40);
   const build = { id: 'client', status: 'FINISHED', app: { id: cfg.mobile.projectId }, gitCommitHash: value.source,
     appIdentifier: 'app.example.mobile.development', buildProfile: 'development', platform: 'ANDROID', distribution: 'INTERNAL', runtime: { version: runtime } };
@@ -84,8 +115,9 @@ for (const operation of ['build', 'update']) test(`${operation} publishes verifi
   fs.writeFileSync(path.join(directory, 'bundle.js'), 'preview bytes'); seal(directory, value, 'development');
   let calls = 0;
   publishDevelopment(value, directory, (args, root) => {
-    calls++; assert.equal(args[args.indexOf('--branch') + 1], 'preview-123-1');
-    assert.ok(!args.includes('--channel')); assert.ok(args.includes('--skip-bundler'));
+    calls++;
+    assert.equal(args[args.indexOf(mode === 'channel' ? '--channel' : '--branch') + 1], mode === 'channel' ? 'development' : 'preview-123-1');
+    assert.ok(!args.includes(mode === 'channel' ? '--branch' : '--channel')); assert.ok(args.includes('--skip-bundler'));
     assert.equal(readJson(path.join(root, 'app.json')).expo.plugins, undefined);
     return [{ group: 'group', platform: 'android', runtimeVersion: runtime }];
   }, operation === 'build' ? build : undefined);
@@ -131,23 +163,26 @@ test('preview workflow exports without credentials and has no release, deploymen
   assert.equal(workflow.jobs.export.if, undefined, 'Both operations must produce an OTA bundle.');
   assert.deepEqual(workflow.jobs.build.needs, ['context', 'environment', 'export']);
   assert.deepEqual(workflow.jobs.publish.needs, ['context', 'export', 'build']);
-  const publish = new Function('needs', 'inputs', 'cancelled', `return (${workflow.jobs.publish.if.slice(3, -2)});`);
-  for (const operation of ['build', 'update']) for (const exported of ['success', 'failure', 'skipped', 'cancelled'])
-    for (const built of operation === 'build' ? ['success', 'failure', 'skipped', 'cancelled'] : ['skipped']) for (const cancelled of [false, true]) {
-      const expected = !cancelled && exported === 'success' && (operation === 'update' || built === 'success');
-      assert.equal(publish({ export: { result: exported }, build: { result: built } }, { operation }, () => cancelled), expected,
-        `${operation}: export=${exported}, build=${built}, cancelled=${cancelled}`);
+  const publish = new Function('needs', 'cancelled', `return (${workflow.jobs.publish.if.slice(3, -2)});`);
+  for (const build of [false, true]) for (const update of [false, true]) for (const exported of ['success', 'failure', 'skipped', 'cancelled'])
+    for (const built of ['success', 'failure', 'skipped', 'cancelled']) for (const cancelled of [false, true]) {
+      const expected = !cancelled && exported === 'success' && update && (built === 'success' || !build && built === 'skipped');
+      assert.equal(publish({ export: { result: exported, outputs: { build: String(build), update: String(update) } }, build: { result: built } }, () => cancelled), expected);
     }
   for (const name of ['build', 'publish']) {
     const downloads = workflow.jobs[name].steps.filter(step => step.uses?.includes('download-artifact'));
-    assert.ok(downloads.some(step => step.with.name === 'development-export'));
+    assert.ok(downloads.some(step => step.with.name === 'development-export-${{ inputs.platform }}'));
   }
-  const client = workflow.jobs.publish.steps.find(step => step.with?.name === 'development-build');
-  assert.equal(client.if, "inputs.operation == 'build'");
+  const client = workflow.jobs.publish.steps.find(step => step.with?.name === 'development-build-${{ inputs.platform }}');
+  assert.equal(client.if, "needs.export.outputs.build == 'true'");
   assert.equal(workflow.jobs.build.steps.at(-1).with.path, 'artifacts/development-build.json');
+  assert.equal(workflow.concurrency.queue, 'max');
+  assert.equal(workflow.jobs.context.steps.find(step => step.id === 'context').env.PREVIEW_CHANNEL, '${{ inputs.channel }}');
   for (const job of Object.values(workflow.jobs)) for (const step of job.steps) {
     assert.ok(!/worker.mjs|eas submit|eas channel|git push/.test(step.run ?? ''));
     if (step.uses?.includes('download-artifact')) assert.equal(step.with['run-id'], undefined);
+    if (step.uses?.includes('-artifact')) assert.match(step.with.name, /-\$\{\{ inputs.platform \}\}$/);
+    if (step.with?.reuse) assert.match(step.with.reuse, /-\$\{\{ inputs.platform \}\}$/);
   }
 });
 

@@ -1,6 +1,6 @@
 # Release workflow operations
 
-[release.yml](release.yml) owns the three fixed release paths and their approval boundaries; [worker.mjs](../../src/worker.mjs) implements its phases. Consumers call this workflow from a manual `workflow_dispatch` with `profile` and optional `rebuild`. The worker accepts dispatches from the configured default branch and GitHub retries of those runs. The [root README](../../README.md) describes selection, versions and execution order; the [consumer module](../../src/consumer/README.md) owns configuration and hooks.
+[release.yml](release.yml) is the pinned consumer entry point. It optionally prepares Dev candidates and gates beta promotion before invoking the existing three paths in [delivery.yml](delivery.yml); [worker.mjs](../../src/worker.mjs) implements delivery phases. Consumers pass `profile` and optional `rebuild` from a default-branch manual dispatch or configured continuous-delivery push. The [root README](../../README.md) describes selection and versions; the [consumer module](../../src/consumer/README.md#continuous-delivery-to-beta) owns promotion configuration and usage.
 
 ## Set up a consumer
 
@@ -29,4 +29,4 @@ A fresh dispatch remains available after failure without GitHub deployment clean
 
 ## Development build and preview workflow
 
-[development.yml](development.yml) is an optional manual workflow alongside release.yml. It never dispatches a release. Configure and use it as described in the [development preview contract](../../src/consumer/README.md#development-previews). Package, release-workflow and development-workflow pins must match; the shared pin updater handles all three.
+[development.yml](development.yml) supports manual previews and automatic conditional preparation invoked by Release. It never dispatches a release itself. Configure and use it as described in the [development preview contract](../../src/consumer/README.md#development-previews). Package, release-workflow and development-workflow pins must match; the shared pin updater handles all three. Artifacts and producer retries are isolated by platform. Development preparation queues independently of the serialized post-approval delivery, so a pending beta review does not block newer candidates.

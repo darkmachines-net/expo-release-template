@@ -1,4 +1,4 @@
-/** @file Fixed GitHub jobs resume immutable plans across paired Android and independent EAS build targets. */
+/** @file Validate protected delivery identities and resume immutable post-approval release plans across native targets. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { assert } from './engine.mjs';
@@ -18,12 +18,12 @@ export function output(key, value) {
   if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${text}\n`);
 }
 
-/** Require an immutable default-branch workflow invocation before accepting any publishing context. */
-export function hostedIdentity(config, env = process.env) {
-  assert(env.GITHUB_EVENT_NAME === 'workflow_dispatch' && env.GITHUB_REF === `refs/heads/${config.defaultBranch}`
+/** Require an immutable protected default-branch invocation; continuous delivery explicitly opts into push events. */
+export function hostedIdentity(config, env = process.env, events = ['workflow_dispatch']) {
+  assert(events.includes(env.GITHUB_EVENT_NAME) && env.GITHUB_REF === `refs/heads/${config.defaultBranch}`
     && env.GITHUB_REPOSITORY === config.repository && /^[a-f0-9]{40}$/.test(env.GITHUB_SHA ?? '')
     && /^[a-f0-9]{40}$/.test(env.TOOLKIT_SHA ?? '') && /^\d+$/.test(env.GITHUB_RUN_ID ?? '') && /^[1-9]\d*$/.test(env.GITHUB_RUN_ATTEMPT ?? ''),
-    'Release requires a protected default-branch dispatch or its job retries.');
+    'Publication requires an allowed protected default-branch event or its job retries.');
   return { repository: config.repository, source: env.GITHUB_SHA, toolkit: env.TOOLKIT_SHA, run: env.GITHUB_RUN_ID };
 }
 
@@ -44,7 +44,9 @@ export function nativeArtifacts(plan, artifacts) {
 
 /** Execute a single internal workflow phase with an explicit checkout and artifact directory. */
 export async function worker(phase, root, state) {
-  const config = loadConfig(root), identity = hostedIdentity(config);
+  const config = loadConfig(root), identity = hostedIdentity(config, process.env,
+    process.env.RELEASE_PROFILE === 'beta' && config.development?.channel && config.development?.promotionEnvironment
+      ? ['workflow_dispatch', 'push'] : ['workflow_dispatch']);
   const client = github(config.repository), contextFile = path.join(state, 'context.json'), planFile = path.join(state, 'plan.json');
   const profile = process.env.RELEASE_PROFILE, targetId = process.env.RELEASE_TARGET;
   const artifacts = path.resolve('artifacts');
