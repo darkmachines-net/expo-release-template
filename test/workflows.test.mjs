@@ -1,4 +1,4 @@
-/** @file Check post-approval delivery ordering, mixed native credential boundaries, retry reuse and upstream setup. */
+/** @file Check parallel artifact builds, server-gated client delivery, native credential boundaries and retry reuse. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,6 +9,17 @@ const jobs = workflow.jobs;
 
 /** Read the fixed prerequisites from a GitHub job. */
 function needs(name) { return [jobs[name].needs ?? []].flat(); }
+
+/** Evaluate job readiness from terminal prerequisites and the workflow's conditions, including implicit success(). */
+function ready(name, results, outputs, cancelled = false) {
+  const dependencies = needs(name);
+  if (dependencies.some(id => !['success', 'failure', 'cancelled', 'skipped'].includes(results[id]))) return false;
+  const context = Object.fromEntries(dependencies.map(id => [id, { result: results[id], outputs: id === 'prepare' ? outputs : {} }]));
+  const condition = jobs[name].if ?? 'true';
+  if (!/\b(?:always|cancelled|success|failure)\(/.test(condition) && dependencies.some(id => results[id] !== 'success')) return false;
+  const expression = condition.replace(/\bneeds\.([\w-]+)/g, (_match, id) => `needs[${JSON.stringify(id)}]`);
+  return new Function('needs', 'always', 'cancelled', `return (${expression});`)(context, () => true, () => cancelled);
+}
 
 test('the single reusable release workflow has fixed jobs and repository serialization', () => {
   assert.ok(workflow.on.workflow_call); assert.equal(workflow.concurrency['cancel-in-progress'], false);
@@ -29,8 +40,37 @@ test('reservation precedes every build and external operation', () => {
   assert.ok(needs('server-deploy').includes('server-publish'));
   assert.ok(needs('native-build').includes('native-start'));
   assert.match(jobs['native-build'].if, /always\(\).*needs.native-start.result == 'success'/);
-  assert.ok(needs('native-start').includes('server-deploy'));
-  assert.match(jobs['native-start'].if, /server != 'true'.*server-deploy.result == 'success'/);
+});
+
+test('server, native and OTA artifacts can build together before any deployment completes', () => {
+  const results = { context: 'success', prepare: 'success', reserve: 'success' };
+  const outputs = { server: 'true', native: 'true', ota: '["android","ios"]' };
+  for (const name of ['server-build', 'native-start', 'ota-export']) assert.equal(ready(name, results, outputs), true, name);
+  assert.equal(ready('native-build', results, outputs), false, 'Native builds still need their recorded intents.');
+  results['native-start'] = 'success';
+  for (const server of [undefined, 'in_progress', 'failure', 'success']) {
+    results['server-deploy'] = server;
+    assert.equal(ready('native-build', results, outputs), true);
+    assert.equal(ready('native-record', { ...results, 'native-build': 'success' }, outputs), true);
+  }
+  for (const reserve of ['failure', 'cancelled', 'skipped']) for (const name of ['server-build', 'native-start', 'ota-export'])
+    assert.equal(ready(name, { ...results, reserve }, outputs), false, `${name}: ${reserve}`);
+  assert.equal(ready('native-start', results, { ...outputs, native: 'false' }), false);
+  assert.equal(ready('native-build', results, outputs, true), false);
+});
+
+test('client delivery stays blocked until the selected server succeeds, including failures and skipped server paths', () => {
+  const results = { context: 'success', prepare: 'success', 'native-record': 'success', 'ota-export': 'success' };
+  for (const server of ['true', 'false']) for (const status of [undefined, 'in_progress', 'success', 'failure', 'cancelled', 'skipped'])
+    for (const cancelled of [false, true]) for (const name of ['native-submit', 'ota-publish']) {
+      const terminal = ['success', 'failure', 'cancelled', 'skipped'].includes(status);
+      assert.equal(ready(name, { ...results, 'server-deploy': status }, { server, native: 'true', submit: 'true' }, cancelled),
+        !cancelled && terminal && (server === 'false' || status === 'success'), `${name}: ${server}/${status}/${cancelled}`);
+    }
+  const deployed = { ...results, 'server-deploy': 'success' };
+  for (const status of ['failure', 'cancelled', 'skipped']) for (const name of ['native-submit', 'ota-publish'])
+    assert.equal(ready(name, { ...deployed, 'native-record': status }, { server: 'true', native: 'true', submit: 'true' }), false);
+  assert.equal(ready('ota-publish', { ...deployed, 'native-record': 'skipped' }, { server: 'true', native: 'false' }), true);
 });
 
 test('submission waits for native evidence and selected server deployment', () => {

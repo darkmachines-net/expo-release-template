@@ -13,6 +13,8 @@
 
 ## Immutable evidence and job retries
 
+After approval and version reservation, selected server builds, native builds and OTA exports run concurrently. Native build intents and confirmed build evidence do not wait for the server, so a server failure does not discard a completed client build. Store submission and OTA publication still wait for successful deployment when the plan selects a server change; when no server change is selected, skipped server jobs do not block client delivery. OTA publication also requires any selected native build evidence, but does not wait for store submission. Workflow runs remain serialized through delivery.
+
 Only current-format history is supported. Old plans, receipts, pending requests, signer histories and runtime baselines are not imported; existing legacy releases cannot be recovered through this toolkit.
 
 Use GitHub's **Re-run failed jobs** after fixing credentials or another failure. Retries retain the original source, tagged build commit, plan, semantic versions and paired build-number reservation. Completed job artifacts are restored from the same run and never overwritten. An expired or missing artifact cannot replace a conflicting reservation or receipt; start a fresh dispatch if the original inputs are no longer available.
