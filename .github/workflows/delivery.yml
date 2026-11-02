@@ -1,4 +1,4 @@
-# Execute the existing three release paths after promotion, serializing version reservations and provider delivery.
+# Build selected artifacts concurrently after promotion and reservation; gate client delivery on server readiness.
 # Source, signing, publishing and deployment credentials stay in separate jobs.
 name: Deliver approved Expo release
 on:
@@ -161,10 +161,8 @@ jobs:
           DEPLOY_WG_PRIVATE_KEY: ${{ secrets.DEPLOY_WG_PRIVATE_KEY }}
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
   native-start:
-    needs: [prepare, reserve, server-deploy]
-    if: >-
-      always() && !cancelled() && needs.reserve.result == 'success' && needs.prepare.outputs.native == 'true' &&
-      (needs.prepare.outputs.server != 'true' || needs.server-deploy.result == 'success')
+    needs: [prepare, reserve]
+    if: needs.prepare.outputs.native == 'true'
     runs-on: ubuntu-latest
     permissions: { contents: read, deployments: write }
     steps:
