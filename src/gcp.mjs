@@ -1,4 +1,4 @@
-/** @file Deploys immutable images through migrations, tagged Cloud Run readiness, and revision-pinned Firebase Hosting. */
+/** @file Deploys immutable API and optional worker images through migrations, strict readiness checks, and revision-pinned Hosting. */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,8 @@ import { run } from './io.mjs';
 /** Validate provider destinations and the confirmed publication receipt before admitting cloud credentials. */
 export function gcpInputs(spec, published, plan) {
   assert(spec.provider === 'gcp' && /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(spec.project) && /^[a-z]+-[a-z0-9]+[0-9]$/.test(spec.region), 'Invalid GCP project or region.');
-  for (const key of ['api', 'worker', 'migrationJob', 'hostingSite']) assert(/^[a-z][a-z0-9-]{1,61}[a-z0-9]$/.test(spec[key]), 'Invalid GCP resource name.');
+  for (const key of ['api', 'migrationJob', 'hostingSite', ...(spec.worker === undefined ? [] : ['worker'])]) assert(typeof spec[key] === 'string' && /^[a-z][a-z0-9-]{1,61}[a-z0-9]$/.test(spec[key]), 'Invalid GCP resource name.');
+  assert(/^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(spec.readinessPath === undefined ? '/api/ready' : spec.readinessPath), 'Invalid GCP readiness path.');
   assert(spec.registry.startsWith(`${spec.region}-docker.pkg.dev/${spec.project}/`) && /^[a-z0-9/.-]+$/.test(spec.registry), 'Registry must belong to the deployment project and region.');
   const origin = new URL(spec.origin);
   assert(origin.protocol === 'https:' && origin.origin === spec.origin, 'Hosting verification requires an exact HTTPS origin.');
@@ -48,7 +49,7 @@ export async function deployGcp(spec, published, plan, env = process.env, execut
   };
   /** Check application and schema health on the selected HTTPS endpoint without following redirects. */
   const health = async (origin, revision) => {
-    const response = await fetcher(`${origin}/api/ready`, { redirect: 'error', signal: AbortSignal.timeout(55000), headers: { 'Cache-Control': 'no-cache' } });
+    const response = await fetcher(`${origin}${spec.readinessPath ?? '/api/ready'}`, { redirect: 'error', signal: AbortSignal.timeout(55000), headers: { 'Cache-Control': 'no-cache' } });
     const data = await response.json();
     assert(response.ok && data.status === 'ok' && data.version === plan.versions.server && data.revision === revision, 'Deployed application version, revision or schema readiness differs.');
   };
@@ -65,9 +66,12 @@ export async function deployGcp(spec, published, plan, env = process.env, execut
     assert(migrated.status?.conditions?.some(c => c.type === 'Completed' && c.status === 'True'), 'Migration execution did not complete.');
     const tagName = `release-${plan.run}`;
     // A revision without traffic or a tag stays retired and never becomes the latest ready revision.
-    cloud(['run', 'services', 'update', spec.worker, `--region=${spec.region}`, `--image=${value.image}`, '--no-traffic', `--tag=${tagName}`]);
-    const worker = ready(spec.worker);
-    cloud(['run', 'services', 'update-traffic', spec.worker, `--region=${spec.region}`, `--to-revisions=${worker.revision}=100`]);
+    let worker;
+    if (spec.worker !== undefined) {
+      cloud(['run', 'services', 'update', spec.worker, `--region=${spec.region}`, `--image=${value.image}`, '--no-traffic', `--tag=${tagName}`]);
+      worker = ready(spec.worker);
+      cloud(['run', 'services', 'update-traffic', spec.worker, `--region=${spec.region}`, `--to-revisions=${worker.revision}=100`]);
+    }
     cloud(['run', 'services', 'update', spec.api, `--region=${spec.region}`, `--image=${value.image}`, '--no-traffic', `--tag=${tagName}`]);
     const api = ready(spec.api), url = api.service.status.traffic?.find(t => t.tag === tagName && t.revisionName === api.revision)?.url;
     assert(url?.startsWith('https://') && new URL(url).hostname.endsWith('.run.app'), 'Missing verified revision URL.');
@@ -78,7 +82,7 @@ export async function deployGcp(spec, published, plan, env = process.env, execut
     command('firebase', ['deploy', '--only', 'hosting', '--project', spec.project, '--config', path.join(directory, 'firebase.json'), '--non-interactive', '--json'], { cwd: directory });
     assert(ready(spec.api).revision === api.revision, 'API changed during Hosting publication.');
     await health(spec.origin, api.revision);
-    return { image: value.image, apiRevision: api.revision, workerRevision: worker.revision, migration: migrated.metadata?.name, healthy: true, origin: spec.origin };
+    return { image: value.image, apiRevision: api.revision, ...(worker ? { workerRevision: worker.revision } : {}), migration: migrated.metadata?.name, healthy: true, origin: spec.origin };
   } catch { throw new Error('GCP deployment failed or is uncertain. Native/OTA delivery is blocked for this attempt; a fresh release remains available.'); }
   finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }

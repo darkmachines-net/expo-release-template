@@ -1,4 +1,4 @@
-/** @file Tests tagged GCP activation, immutable rollout ordering and failure gates without cloud or provider access. */
+/** @file Tests API-only and paired GCP rollout, readiness identity, and failure gates without cloud or provider access. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -48,6 +48,30 @@ test('verifies the platform digest selected from an immutable multi-platform ind
   assert.equal(runtimeImage(image, { manifests: [platform, { platform: { os: 'unknown', architecture: 'unknown' } }] }), 'registry.example/app@' + digest);
   assert.throws(() => runtimeImage(image, { manifests: [platform, platform] }), /one linux/);
   assert.throws(() => runtimeImage(image, { manifests: [] }), /one linux/);
+});
+
+test('API-only deployments preserve migration ordering and strict readiness on a custom path', async () => {
+  const h = harness();
+  delete h.spec.worker;
+  h.spec.readinessPath = '/api/v1/readyz';
+  const result = await deployGcp(h.spec, h.published, h.release, h.env, h.execute, h.fetcher);
+  assert.equal(Object.hasOwn(result, 'workerRevision'), false);
+  const updates = h.calls.filter(c => c.args?.[1] === 'services' && c.args[2] === 'update');
+  assert.deepEqual(updates.map(c => c.args[3]), [h.spec.api]);
+  assert.ok(h.calls.findIndex(c => c.args?.includes('execute')) < h.calls.indexOf(updates[0]));
+  assert.deepEqual(h.calls.filter(c => c.health).map(c => c.health), ['https://verified.run.app/api/v1/readyz', h.spec.origin + '/api/v1/readyz']);
+});
+
+test('custom readiness cannot relax revision identity or escape the selected origin', async () => {
+  const h = harness();
+  delete h.spec.worker;
+  for (const readinessPath of ['//other.invalid', '/api/../admin', '/ready?bypass=1', 'https://other.invalid/ready', '']) {
+    assert.throws(() => gcpInputs({ ...h.spec, readinessPath }, h.published, h.release), /readiness path/);
+  }
+  for (const worker of ['', null, false]) assert.throws(() => gcpInputs({ ...h.spec, worker }, h.published, h.release), /resource name/);
+  await assert.rejects(deployGcp({ ...h.spec, readinessPath: '/api/v1/readyz' }, h.published, h.release, h.env, h.execute,
+    async () => ({ ok: true, /** Simulate readiness from a stale revision. */ json: async () => ({ status: 'ok', version: h.release.versions.server, revision: 'stale' }) })), /deployment failed/);
+  assert.ok(!h.calls.some(c => c.binary === 'firebase'));
 });
 test('rejects missing or mismatched publication receipts before any cloud operation', async () => {
   const h = harness();
