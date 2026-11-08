@@ -1,5 +1,5 @@
 # Build selected artifacts concurrently after promotion and reservation; gate client delivery on server readiness.
-# Source, signing, publishing and deployment credentials stay in separate jobs.
+# Source, signing, publishing and deployment credentials stay in separate jobs; Android setup uses supported SDK packages.
 name: Deliver approved Expo release
 on:
   workflow_call:
@@ -196,6 +196,8 @@ jobs:
         with: { distribution: temurin, java-version: '17' }
       - if: matrix.target.builder == 'command'
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        # The pinned action defaults to the retired tools package; command-line tools are installed separately by the action.
+        with: { packages: platform-tools }
       - if: matrix.target.builder == 'command'
         run: node .toolkit/bin/android-tools.mjs
       - if: matrix.target.builder == 'command'

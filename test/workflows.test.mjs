@@ -1,4 +1,4 @@
-/** @file Check parallel artifact builds, server-gated client delivery, native credential boundaries and retry reuse. */
+/** @file Check parallel artifact builds, supported Android setup, server-gated delivery, credential boundaries and retry reuse. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -113,6 +113,8 @@ test('separate native steps scope signing and cloud authentication', () => {
   assert.match(steps.find(step => step.uses === './.toolkit/.github/actions/setup').with.eas, /matrix.target.builder/);
   assert.match(jobs['native-record'].steps.find(step => step.uses === './.toolkit/.github/actions/setup').with.eas, /outputs.cloud/);
   assert.ok(steps.findIndex(step => step.run?.includes('android-tools')) < steps.indexOf(native));
+  const androidSetup = steps.find(step => step.uses?.startsWith('android-actions/setup-android@'));
+  assert.equal(androidSetup.with.packages, 'platform-tools', 'Do not request the retired Android tools package.');
   assert.ok(jobs['native-build'].environment);
 });
 
