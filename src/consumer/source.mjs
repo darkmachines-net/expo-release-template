@@ -1,10 +1,29 @@
-/** @file Source-only inspection and stamping; repository code never receives publication credentials. */
+/** @file Source-only compatibility/signing inspection and stamping; repository code never receives publication credentials. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { hash, inputIdentity, run, git, readJson, writeJson, within, sourceEnvironment } from '../io.mjs';
 import { assert, selectRelease } from '../engine.mjs';
 import { configured } from './config.mjs';
+import { iosSigningTargets } from '../ios-signing.mjs';
+
+/** Inspect store entitlements, including config-plugin changes and extensions, without admitting signing credentials. */
+export function iosSigningRequirements(root, plan) {
+  const targets = iosSigningTargets(plan);
+  if (!targets.length) return {};
+  const { config, profile } = plan, directory = within(root, config.mobile.directory);
+  const require = createRequire(path.join(directory, 'package.json'));
+  const expo = JSON.parse(run(process.execPath, [path.join(path.dirname(require.resolve('expo/package.json')), 'bin/cli'),
+    'config', '--type', 'introspect', '--json'], { cwd: directory, env: sourceEnvironment({ ...plan.environments[profile],
+      EAS_BUILD_PLATFORM: 'ios', EAS_BUILD_PROFILE: config.profiles[profile].easProfile }) }));
+  assert(expo.extra?.eas?.projectId === config.mobile.projectId && expo.owner === config.mobile.owner && expo.slug === config.mobile.slug
+    && targets.every(target => target.applicationId === expo.ios?.bundleIdentifier), 'Inspected iOS signing identity differs.');
+  const requirements = [{ bundleIdentifier: expo.ios.bundleIdentifier, entitlements: expo.ios.entitlements ?? {} },
+    ...(expo.extra?.eas?.build?.experimental?.ios?.appExtensions ?? []).map(extension => ({ bundleIdentifier: extension.bundleIdentifier, entitlements: extension.entitlements ?? {} }))];
+  // Xcode derives APNs from the distribution profile; Expo plugins may emit the development value before export.
+  for (const requirement of requirements) if (['development', 'production'].includes(requirement.entitlements['aps-environment'])) requirement.entitlements['aps-environment'] = 'production';
+  return Object.fromEntries(targets.map(target => [target.id, requirements]));
+}
 
 /**
  * Invoke a declared argv hook with a JSON request and a credential-free environment.

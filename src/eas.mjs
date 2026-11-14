@@ -1,4 +1,4 @@
-/** @file Official EAS operations reconcile builds/submissions and verify managed or paired local counters. */
+/** @file Reconcile EAS builds/submissions, recheck iOS signing before enqueueing, and verify managed or paired counters. */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -93,15 +93,8 @@ export function verifyBuild(build, plan, target) {
   return build;
 }
 
-/**
- * Reuse this run's finished/pending cloud build; enqueue only when no usable build exists.
- * Public list/read failures stop the job, and each invocation makes at most one build request.
- * Status reads use an inert project, so monorepos need no root Expo config and reads never evaluate source.
- * EAS Build evaluates the consumer's source configuration with EXPO_TOKEN for existing
- * EAS-managed credentials. This authenticated evaluation is the explicit exception to
- * source-only execution; privileged submit/update publishers instead use inert projects.
- */
-export async function cloudBuild(root, plan, target, command = eas) {
+/** Find this run's accepted cloud build through an inert project; unreadable or mismatched records never authorize another request. */
+export function acceptedCloudBuild(plan, target, command = eas) {
   const profile = plan.config.profiles[plan.profile];
   const inert = publisher(plan.config, plan.profile);
   try {
@@ -114,15 +107,35 @@ export async function cloudBuild(root, plan, target, command = eas) {
       builds.push(...batch.filter(build => build.message === message));
       if (batch.length < 50) break;
     }
-    for (const build of builds) assert(typeof build.id === 'string' && build.id && build.app?.id === plan.config.mobile.projectId && build.gitCommitHash === plan.build
+    for (const build of builds) assert(typeof build.id === 'string' && build.id && ['NEW', 'IN_QUEUE', 'IN_PROGRESS', 'PENDING_CANCEL', 'FINISHED', 'ERRORED', 'CANCELED'].includes(build.status)
+      && build.app?.id === plan.config.mobile.projectId && build.gitCommitHash === plan.build
       && build.platform?.toLowerCase() === target.platform && build.buildProfile === profile.easProfile
       && build.appIdentifier === target.applicationId, 'Accepted EAS build identity differs.');
     const accepted = builds.find(build => build.status === 'FINISHED')
       ?? builds.find(build => !['ERRORED', 'CANCELED'].includes(build.status));
-    let id = accepted?.id;
+    if (accepted?.status === 'FINISHED') verifyBuild(accepted, plan, target);
+    return accepted;
+  } finally { fs.rmSync(inert, { recursive: true, force: true }); }
+}
+
+/** Recheck live store credentials immediately before a new iOS request; accepted builds need no new signing. */
+export async function checkCloudSigning(plan, target) {
+  if (target.platform === 'ios') await (await import('./ios-signing.mjs')).checkIosSigning(plan, target);
+}
+
+/**
+ * Reuse accepted builds or recheck signing and enqueue once; retries preserve build identity and counters.
+ * Only EAS Build evaluates authenticated application config. Status reads use an inert project.
+ * iOS may refresh provisioning profiles with the existing certificate; Android credentials remain frozen.
+ */
+export async function cloudBuild(root, plan, target, command = eas, checkSigning = checkCloudSigning) {
+  const profile = plan.config.profiles[plan.profile], inert = publisher(plan.config, plan.profile);
+  try {
+    let id = acceptedCloudBuild(plan, target, command)?.id;
     if (!id) {
-      const result = command(['build', '--platform', target.platform, '--profile', profile.easProfile, '--message', message,
-        '--non-interactive', '--freeze-credentials', '--no-wait', '--json'], path.join(root, plan.config.mobile.directory),
+      await checkSigning(plan, target);
+      const result = command(['build', '--platform', target.platform, '--profile', profile.easProfile, '--message', `release:${plan.run}:${target.id}`,
+        '--non-interactive', ...(target.platform === 'ios' ? [] : ['--freeze-credentials']), '--no-wait', '--json'], path.join(root, plan.config.mobile.directory),
       { environment: { ...plan.environments[plan.profile], EAS_NO_VCS: '0' } });
       assert(Array.isArray(result) && result.length === 1 && result[0].id, 'EAS build acceptance is uncertain; retry will check EAS before building.');
       id = result[0].id;

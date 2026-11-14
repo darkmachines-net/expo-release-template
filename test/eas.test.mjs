@@ -1,4 +1,4 @@
-/** @file EAS contracts, isolated build/submission reconciliation, destination identity and exact OTA publication. */
+/** @file EAS contracts, iOS signing rechecks, isolated build/submission reconciliation and exact OTA publication. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -99,6 +99,28 @@ test('build-list errors or malformed responses never authorize another cloud bui
       return result;
     }));
   }
+});
+
+test('new iOS requests recheck signing and permit profile refresh while accepted builds bypass signing', async () => {
+  const value = plan(), target = value.config.mobile.targets[1];
+  const finished = { ...build(value), platform: 'IOS', fingerprint: { hash: value.observation.fingerprints.production.ios }, message: `release:${value.run}:ios` };
+  for (const accepted of [null, { ...finished, status: 'IN_PROGRESS' }, finished]) {
+    const calls = [];
+    await cloudBuild('source', value, target, args => {
+      calls.push(args[0]);
+      if (args[0] === 'build:list') return accepted ? [accepted] : [];
+      if (args[0] === 'build') {
+        assert.equal(args.includes('--freeze-credentials'), false);
+        assert.ok(args.includes('--non-interactive'));
+        return [{ id: finished.id }];
+      }
+      return finished;
+    }, async () => { calls.push('signing'); });
+    assert.deepEqual(calls, accepted ? ['build:list', 'build:view'] : ['build:list', 'signing', 'build', 'build:view']);
+  }
+  await assert.rejects(cloudBuild('source', value, target, args => {
+    assert.equal(args[0], 'build:list'); return [];
+  }, async () => { throw new Error('expired certificate'); }), /expired certificate/);
 });
 
 test('publisher workspace contains inert identities and no source hooks or plugins', t => {
