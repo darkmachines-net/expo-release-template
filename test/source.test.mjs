@@ -1,9 +1,9 @@
-/** @file Build commits, credential-free signing inspection, retry plan reuse and unsafe preparation rejection. */
+/** @file Build commits, retry plan reuse, serverless configuration and unsafe preparation rejection. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { prepare, hook, exportBundle, iosSigningRequirements } from '../src/consumer/source.mjs';
+import { prepare, hook, exportBundle } from '../src/consumer/source.mjs';
 import { configured, loadConfig } from '../src/consumer/config.mjs';
 import { selectRelease } from '../src/engine.mjs';
 import { run, writeJson, sourceEnvironment, readJson } from '../src/io.mjs';
@@ -80,30 +80,6 @@ import fs from 'node:fs';console.log(JSON.stringify({request:JSON.parse(fs.readF
     assert.equal(result.request.action,'inspect'); assert.equal(result.request.source,'commit');
     assert.equal(result.token,undefined); assert.equal(result.public,'test');
   } finally { if(previous===undefined)delete process.env.EXPO_TOKEN;else process.env.EXPO_TOKEN=previous; }
-});
-
-test('store signing inspection includes plugin entitlements and extensions without running with credentials', t => {
-  const repo = repository(t), value = plan();
-  const expo = { owner: 'owner', slug: 'app', ios: { bundleIdentifier: 'app.example.mobile', entitlements: { 'com.apple.developer.healthkit': true, 'aps-environment': 'development' } },
-    extra: { eas: { projectId: value.config.mobile.projectId, build: { experimental: { ios: { appExtensions: [
-      { bundleIdentifier: 'app.example.mobile.widget', entitlements: { 'com.apple.security.application-groups': ['group.app'], 'aps-environment': 'production' } },
-    ] } } } } } };
-  repo.save('package.json', '{"private":true}'); repo.save('node_modules/expo/package.json', '{"name":"expo"}');
-  repo.save('node_modules/expo/bin/cli', `/** @file Simulate Expo config introspection and reject credential exposure. */
-if(process.env.EXPO_TOKEN||process.env.GITHUB_TOKEN||process.env.EAS_BUILD_PLATFORM!=='ios'||process.env.EAS_BUILD_PROFILE!=='production')throw Error('unsafe signing inspection');
-if(!process.argv.includes('introspect'))throw Error('plugins must be introspected');console.log(JSON.stringify(${JSON.stringify(expo)}));`);
-  for (const key of ['EXPO_TOKEN', 'GITHUB_TOKEN']) {
-    const previous = process.env[key]; process.env[key] = 'secret';
-    t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
-  }
-  assert.deepEqual(iosSigningRequirements(repo.root, value), { ios: [
-    { bundleIdentifier: 'app.example.mobile', entitlements: { 'com.apple.developer.healthkit': true, 'aps-environment': 'production' } },
-    { bundleIdentifier: 'app.example.mobile.widget', entitlements: { 'com.apple.security.application-groups': ['group.app'], 'aps-environment': 'production' } },
-  ] });
-  value.config.mobile.projectId = 'wrong-project';
-  assert.throws(() => iosSigningRequirements(repo.root, value), /identity differs/);
-  value.native = false;
-  assert.deepEqual(iosSigningRequirements('nonexistent-source', value), {});
 });
 
 test('minimal serverless Expo fixture selects only its enabled Android release path', () => {

@@ -1,5 +1,5 @@
-# Build artifacts concurrently after reservation; check live iOS signing before native work and server deployment.
-# Source, signing, publishing and deployment credentials stay in separate jobs; successful artifacts remain reusable.
+# Build selected artifacts concurrently after promotion and reservation; gate client delivery on server readiness.
+# Source, signing, publishing and deployment credentials stay in separate jobs; Android setup uses supported SDK packages.
 name: Deliver approved Expo release
 on:
   workflow_call:
@@ -64,7 +64,6 @@ jobs:
       noop: ${{ steps.prepare.outputs.noop }}
       server: ${{ steps.prepare.outputs.server }}
       native: ${{ steps.prepare.outputs.native }}
-      ios_signing: ${{ steps.prepare.outputs.ios_signing }}
       submit: ${{ steps.prepare.outputs.submit }}
       ota: ${{ steps.prepare.outputs.ota }}
       native_matrix: ${{ steps.prepare.outputs.native_matrix }}
@@ -127,10 +126,7 @@ jobs:
       - run: node .toolkit/bin/worker.mjs server-publish
         env: { GITHUB_TOKEN: '${{ github.token }}', GHCR_TOKEN: '${{ github.token }}' }
   server-deploy:
-    needs: [context, prepare, server-publish, native-signing]
-    if: >-
-      always() && !cancelled() && needs.server-publish.result == 'success' &&
-      (needs.prepare.outputs.ios_signing != 'true' || needs.native-signing.result == 'success')
+    needs: [context, server-publish]
     runs-on: ubuntu-latest
     environment: ${{ needs.context.outputs.deploy_environment }}
     permissions: { contents: write, deployments: write, packages: read, id-token: write }
@@ -164,24 +160,9 @@ jobs:
           DEPLOY_WG_ENDPOINT: ${{ secrets.DEPLOY_WG_ENDPOINT }}
           DEPLOY_WG_PRIVATE_KEY: ${{ secrets.DEPLOY_WG_PRIVATE_KEY }}
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
-  native-signing:
-    needs: [context, prepare, reserve]
-    if: needs.prepare.outputs.ios_signing == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment: ${{ needs.context.outputs.signing }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with: *toolkit
-      - uses: ./.toolkit/.github/actions/setup
-        with: { state: plan, eas: 'true' }
-      - run: node .toolkit/bin/worker.mjs native-signing
-        env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}' }
   native-start:
-    needs: [prepare, reserve, native-signing]
-    if: >-
-      always() && !cancelled() && needs.prepare.outputs.native == 'true' && needs.reserve.result == 'success' &&
-      (needs.prepare.outputs.ios_signing != 'true' || needs.native-signing.result == 'success')
+    needs: [prepare, reserve]
+    if: needs.prepare.outputs.native == 'true'
     runs-on: ubuntu-latest
     permissions: { contents: read, deployments: write }
     steps:

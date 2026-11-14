@@ -1,13 +1,12 @@
-/** @file Resume immutable protected release plans with live iOS signing checks before native builds and server deployment. */
+/** @file Validate protected delivery identities and resume immutable post-approval release plans across native targets. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { assert } from './engine.mjs';
 import { loadConfig, verifyPins, verifyPlan, targetBuilder, nativeMatrix, verifyCounters } from './consumer/config.mjs';
 import { git, run, readJson, writeJson, sourceEnvironment, seal, verify, hash } from './io.mjs';
-import { prepare, hook, exportBundle, iosSigningRequirements } from './consumer/source.mjs';
+import { prepare, hook, exportBundle } from './consumer/source.mjs';
 import { github, loadHistory, reserve, begin, complete, perform, receipt } from './github.mjs';
-import { eas, publisher, readEnvironments, verifyBuildFloors, cloudBuild, acceptedCloudBuild, checkCloudSigning, verifyBuild, submit, update } from './eas.mjs';
-import { iosSigningTargets } from './ios-signing.mjs';
+import { eas, publisher, readEnvironments, verifyBuildFloors, cloudBuild, verifyBuild, submit, update } from './eas.mjs';
 import { buildServer, commandBuild } from './build.mjs';
 import { connectAndDeploy } from './deploy.mjs';
 import { deployGcp } from './gcp.mjs';
@@ -64,7 +63,7 @@ export async function worker(phase, root, state) {
       deploy_environment: selected.deployEnvironment, deploy_provider: config.server?.deployment.provider ?? 'webhook', cloud: nativeMatrix(config).some(t => t.builder === 'eas') })) output(key, value);
     return;
   }
-  if (reused && !['prepare', 'native-signing'].includes(phase)) return;
+  if (reused && phase !== 'prepare') return;
   if (phase === 'environment') {
     verifyBuildFloors(config);
     const context = readJson(contextFile); context.environments = readEnvironments(config); writeJson(contextFile, context); return;
@@ -77,7 +76,6 @@ export async function worker(phase, root, state) {
     const plan = reused ? readJson(planFile) : prepare(root, config, readJson(contextFile), profile, process.env.RELEASE_REBUILD === 'true');
     if (reused) verifyPlan(plan, config, identity);
     if (!plan.noop && !reused) {
-      plan.iosSigning = iosSigningRequirements(root, plan);
       if (config.mobile) {
         const easConfig = readJson(path.join(root, config.mobile.directory, 'eas.json'));
         const buildProfile = easConfig.build[config.profiles[profile].easProfile];
@@ -98,17 +96,12 @@ export async function worker(phase, root, state) {
     writeJson(planFile, plan);
     const builds = !plan.native ? [] : nativeMatrix(config);
     for (const [key, value] of Object.entries({ noop: plan.noop, server: plan.server, native: plan.native, ota: plan.ota,
-      ios_signing: iosSigningTargets(plan).length > 0,
       native_matrix: builds, build: plan.build, submit: plan.native && config.profiles[profile].submit === true })) output(key, value);
     return;
   }
   const plan = readJson(planFile);
   verifyPlan(plan, config, identity);
   const selected = config.profiles[plan.profile], target = config.mobile?.targets.find(t => t.id === targetId);
-  if (phase === 'native-signing') {
-    for (const value of iosSigningTargets(plan)) if (!acceptedCloudBuild(plan, value)) await checkCloudSigning(plan, value);
-    return;
-  }
   if (phase === 'reserve') {
     git(root, ['fetch', path.resolve(state, 'build.bundle'), 'refs/heads/expo-release-build']);
     assert(git(root, ['rev-parse', `${plan.build}^`]) === plan.source, 'Build commit has an unexpected parent.');

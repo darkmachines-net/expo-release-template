@@ -1,4 +1,4 @@
-/** @file Check live signing gates, parallel artifact builds, deployment ordering, credential boundaries and retry reuse. */
+/** @file Check parallel artifact builds, supported Android setup, server-gated delivery, credential boundaries and retry reuse. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -24,7 +24,7 @@ function ready(name, results, outputs, cancelled = false) {
 test('the single reusable release workflow has fixed jobs and repository serialization', () => {
   assert.ok(workflow.on.workflow_call); assert.equal(workflow.concurrency['cancel-in-progress'], false);
   assert.deepEqual(Object.keys(workflow.on.workflow_call.inputs), ['profile', 'rebuild']);
-  for (const name of ['prepare', 'reserve', 'native-signing', 'server-build', 'server-publish', 'server-deploy', 'native-start', 'native-build', 'native-record', 'native-submit', 'ota-export', 'ota-publish']) assert.ok(jobs[name]);
+  for (const name of ['prepare', 'reserve', 'server-build', 'server-publish', 'server-deploy', 'native-start', 'native-build', 'native-record', 'native-submit', 'ota-export', 'ota-publish']) assert.ok(jobs[name]);
   assert.ok(!JSON.stringify(workflow).includes('workflow_run'));
   for (const job of Object.values(jobs)) {
     const checkout = job.steps.find(step => step.with?.path === '.toolkit');
@@ -34,7 +34,7 @@ test('the single reusable release workflow has fixed jobs and repository seriali
 });
 
 test('reservation precedes every build and external operation', () => {
-  for (const name of ['server-build','native-signing','native-start','ota-export']) assert.ok(needs(name).includes('reserve'));
+  for (const name of ['server-build','native-start','ota-export']) assert.ok(needs(name).includes('reserve'));
   assert.ok(needs('reserve').includes('prepare'));
   assert.ok(needs('server-publish').includes('server-build'));
   assert.ok(needs('server-deploy').includes('server-publish'));
@@ -43,7 +43,7 @@ test('reservation precedes every build and external operation', () => {
 });
 
 test('server, native and OTA artifacts can build together before any deployment completes', () => {
-  const results = { context: 'success', prepare: 'success', reserve: 'success', 'native-signing': 'success' };
+  const results = { context: 'success', prepare: 'success', reserve: 'success' };
   const outputs = { server: 'true', native: 'true', ota: '["android","ios"]' };
   for (const name of ['server-build', 'native-start', 'ota-export']) assert.equal(ready(name, results, outputs), true, name);
   assert.equal(ready('native-build', results, outputs), false, 'Native builds still need their recorded intents.');
@@ -57,24 +57,6 @@ test('server, native and OTA artifacts can build together before any deployment 
     assert.equal(ready(name, { ...results, reserve }, outputs), false, `${name}: ${reserve}`);
   assert.equal(ready('native-start', results, { ...outputs, native: 'false' }), false);
   assert.equal(ready('native-build', results, outputs, true), false);
-});
-
-test('live iOS signing gates deployment and native work, while server-only and Android releases skip it', () => {
-  const results = { context: 'success', prepare: 'success', reserve: 'success', 'server-publish': 'success' };
-  for (const ios_signing of ['true', 'false']) for (const status of [undefined, 'in_progress', 'success', 'failure', 'cancelled', 'skipped']) {
-    const outputs = { native: 'true', ios_signing };
-    assert.equal(ready('native-signing', results, outputs), ios_signing === 'true');
-    for (const name of ['server-deploy', 'native-start']) {
-      assert.equal(ready(name, { ...results, 'native-signing': status }, outputs),
-        ['success', 'failure', 'cancelled', 'skipped'].includes(status) && (ios_signing === 'false' || status === 'success'), `${name}: ${ios_signing}/${status}`);
-      assert.equal(ready(name, { ...results, 'native-signing': status }, outputs, true), false);
-    }
-  }
-  const steps = jobs['native-signing'].steps;
-  assert.match(jobs['native-signing'].environment, /outputs.signing/);
-  assert.ok(!steps.some(step => step.run?.includes('worker.mjs install') || step.uses?.includes('upload-artifact') || step.with?.reuse));
-  assert.deepEqual(Object.keys(steps.find(step => step.run?.endsWith('native-signing')).env), ['EXPO_TOKEN']);
-  assert.ok(!JSON.stringify(jobs['server-deploy']).includes('EXPO_TOKEN'));
 });
 
 test('client delivery stays blocked until the selected server succeeds, including failures and skipped server paths', () => {

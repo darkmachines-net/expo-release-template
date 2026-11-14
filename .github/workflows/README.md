@@ -13,9 +13,7 @@
 
 ## Immutable evidence and job retries
 
-After approval and version reservation, selected server builds and OTA exports can start while the protected `native-signing` job checks any selected iOS cloud build. Native work and server deployment require this signing check to succeed; plans without an iOS build skip it. Server/native artifact production can still overlap, and native build evidence does not wait for the server. The [iOS signing contract](../../src/README.md#ios-store-signing) owns profile repair, key requirements, live rechecks and accepted-build reuse. Signing has no reusable artifact and no deployment credentials; server deployment receives no Expo token.
-
-Store submission and OTA publication wait for successful deployment when the plan selects a server change; when no server change is selected, skipped server jobs do not block client delivery. OTA publication also requires any selected native build evidence, but does not wait for store submission. Workflow runs remain serialized through delivery.
+After approval and version reservation, selected server builds, native builds and OTA exports run concurrently. Native build intents and confirmed build evidence do not wait for the server, so a server failure does not discard a completed client build. Store submission and OTA publication still wait for successful deployment when the plan selects a server change; when no server change is selected, skipped server jobs do not block client delivery. OTA publication also requires any selected native build evidence, but does not wait for store submission. Workflow runs remain serialized through delivery.
 
 Only current-format history is supported. Old plans, receipts, pending requests, signer histories and runtime baselines are not imported; existing legacy releases cannot be recovered through this toolkit.
 
