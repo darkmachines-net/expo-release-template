@@ -1,4 +1,4 @@
-/** @file Check parallel builds, reviewed infrastructure gates, server readiness, credential boundaries and immutable retry reuse. */
+/** @file Check parallel builds, infrastructure gates, encrypted failure retention, credential boundaries and immutable retry reuse. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -107,6 +107,17 @@ test('Terraform credentials and encrypted plan artifacts remain in dedicated job
   assert.ok(!JSON.stringify(jobs['terraform-apply']).includes('TERRAFORM_VARS_JSON'));
   for (const [name, job] of Object.entries(jobs)) if (!name.startsWith('terraform-'))
     assert.ok(!JSON.stringify(job).includes('secrets.TERRAFORM_'));
+});
+
+test('failed Terraform jobs retain only encrypted diagnostics under distinct immutable attempt names', () => {
+  for (const name of ['terraform-plan', 'terraform-apply']) {
+    const upload = jobs[name].steps.find(step => step.with?.name?.includes('-diagnostic-'));
+    assert.equal(upload.if, 'failure()');
+    assert.equal(upload.with.name, `${name}-diagnostic-` + '${{ github.run_attempt }}');
+    assert.equal(upload.with.path, 'artifacts/terraform.failure.enc');
+    assert.equal(upload.with['retention-days'], 3); assert.equal(upload.with['if-no-files-found'], 'ignore');
+    assert.equal(upload.with.overwrite, undefined);
+  }
 });
 
 test('submission waits for native evidence and selected server deployment', () => {

@@ -1,4 +1,4 @@
-# Build artifacts concurrently; gate server and client delivery on reviewed Terraform and server readiness.
+# Build concurrently; gate delivery on reviewed Terraform and retain only encrypted diagnostics when infrastructure fails.
 # Source, signing, publishing and deployment credentials stay in separate jobs; Android setup uses supported SDK packages.
 name: Deliver approved Expo release
 on:
@@ -125,6 +125,9 @@ jobs:
       - if: env.RELEASE_REUSE != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with: { name: terraform-plan, path: artifacts, if-no-files-found: error }
+      - if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: { name: 'terraform-plan-diagnostic-${{ github.run_attempt }}', path: artifacts/terraform.failure.enc, if-no-files-found: ignore, retention-days: 3 }
   terraform-apply:
     needs: [context, terraform-plan]
     if: needs.terraform-plan.outputs.changes == 'true'
@@ -147,6 +150,9 @@ jobs:
         with: *terraform-auth
       - run: node .toolkit/bin/worker.mjs terraform-apply
         env: { GITHUB_TOKEN: '${{ github.token }}', TERRAFORM_PLAN_KEY: '${{ secrets.TERRAFORM_PLAN_KEY }}' }
+      - if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: { name: 'terraform-apply-diagnostic-${{ github.run_attempt }}', path: artifacts/terraform.failure.enc, if-no-files-found: ignore, retention-days: 3 }
   server-build:
     needs: [prepare, reserve]
     if: needs.prepare.outputs.server == 'true'
