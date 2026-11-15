@@ -31,7 +31,7 @@ For the manual pre-review workflow and native-client setup, see [development pre
 | Native fingerprint changed, including first cutover | Next major | Build every enabled platform; runtime is the new major |
 | Compatible binary rebuild requested | Next minor | Build binaries and publish OTA for the same runtime |
 | JS/assets changed with compatible native inputs | Next patch | OTA for affected platforms |
-| No relevant changes | Unchanged | No release work |
+| No relevant application changes | Unchanged | No application release work |
 
 There is one mobile semantic version across platforms. Expo runtime is an explicit string such as `"2"`. Binaries 2.0.0 and 2.1.0 can receive bundle version 2.1.1 when their native compatibility is unchanged. Installed binaries keep their original binary version; OTA metadata carries the newer bundle release version. A changed fingerprint always starts a new major. OTA never backports to a different runtime.
 
@@ -40,6 +40,8 @@ The server has an independent patch version. Git input sets retain binary change
 The workflow stamps a detached child commit of the selected source and reserves annotated tags under `expo-release/v3/`. Failed reservations consume their versions. GitHub job retries reuse the same plan and versions, restore completed artifacts and skip confirmed provider operations. Failed or interrupted operations do not block a fresh dispatch or require manual cleanup; only confirmed successes advance baselines. A lost provider acknowledgement can therefore cause redundant work in a later release. The workflow never changes the default branch or opens a version PR. Calibrate's one exception reserves an odd phone/even watch build-number pair above all prior reservations and the verified seed floor.
 
 ## Execution and trust
+
+Profiles can require [Terraform planning and reviewed apply](src/README.md#terraform-before-delivery) before deployment or client publication. This checks the target environment on every configured delivery, even when application inputs are unchanged.
 
 The server path builds and smoke-tests a Docker archive without registry credentials. A separate protected job verifies the current-run artifact, publishes version/commit tags and records its digest. The deployment job opens the configured WireGuard tunnel, invokes the existing webhook once and requires its success/health response before advancing the deployment baseline. A health response does not prove the exact remotely running image digest.
 

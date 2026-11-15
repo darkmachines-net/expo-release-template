@@ -1,4 +1,4 @@
-/** @file Immutable release retries, independent baselines and bounded GitHub reads without repeated writes. */
+/** @file Immutable application/infrastructure retries, independent baselines and bounded GitHub reads without repeated writes. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { github, historyFrom, reserve, begin, complete, operationPayload, loadHistory, perform, receipt } from '../src/github.mjs';
@@ -51,6 +51,36 @@ function setAttempt(t, value) {
   }
   process.env.GITHUB_RUN_ATTEMPT = value;
 }
+
+test('Terraform retries reuse confirmed apply receipts and isolate uncertain attempts without advancing server baselines', async t => {
+  const value = plan(), fake = client(); let applied = 0;
+  value.config.profiles.production.terraform = { directory: 'deploy/gcp', version: '1.13.5' };
+  setAttempt(t, '1');
+  await assert.rejects(perform(fake, value, 'apply/terraform', () => { applied++; throw new Error('uncertain'); }), /uncertain/);
+  await assert.rejects(perform(fake, value, 'apply/terraform', () => assert.fail('duplicate')), /already attempted/);
+  setAttempt(t, '2');
+  const result = { changed: true, digest: 'saved-plan' };
+  await perform(fake, value, 'apply/terraform', () => { applied++; return result; });
+  await perform(fake, value, 'apply/terraform', () => assert.fail('confirmed apply repeated'));
+  assert.equal(applied, 2);
+  const baseline = historyFrom([], [{ payload: operationPayload(value, 'apply/terraform'), state: 'success' }]);
+  assert.equal(baseline.baselines['production/deploy/server'], undefined);
+  const changed = structuredClone(value); changed.config.profiles.production.terraform.directory = 'other';
+  await assert.rejects(receipt(fake, changed, 'apply/terraform'), /identity differs/);
+  setAttempt(t, '1');
+  await perform(client({ deployments: fake.deployments }), { ...value, run: 'fresh' }, 'apply/terraform', () => result);
+});
+
+test('a native target named terraform keeps its application identity separate from infrastructure', () => {
+  const value = plan(); value.config.mobile.targets[0].id = 'terraform';
+  const native = operationPayload(value, 'build/terraform');
+  assert.equal(native.input, value.observation.js.android);
+  assert.equal(native.destination, value.config.mobile.targets[0].applicationId);
+  value.config.profiles.production.terraform = { directory: 'infra' };
+  const infrastructure = operationPayload(value, 'apply/terraform');
+  assert.equal(infrastructure.input, value.source); assert.equal(infrastructure.version, value.versions.server);
+  assert.equal(infrastructure.fingerprint, null); assert.notEqual(infrastructure.destination, native.destination);
+});
 
 test('reservation writes immutable annotated tags before evidence', async () => {
   const fake = client(), value = plan(); await reserve(fake, value);

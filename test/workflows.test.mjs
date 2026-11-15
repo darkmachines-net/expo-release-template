@@ -1,4 +1,4 @@
-/** @file Check parallel artifact builds, supported Android setup, server-gated delivery, credential boundaries and retry reuse. */
+/** @file Check parallel builds, reviewed infrastructure gates, server readiness, credential boundaries and immutable retry reuse. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,11 +10,11 @@ const jobs = workflow.jobs;
 /** Read the fixed prerequisites from a GitHub job. */
 function needs(name) { return [jobs[name].needs ?? []].flat(); }
 
-/** Evaluate job readiness from terminal prerequisites and the workflow's conditions, including implicit success(). */
+/** Evaluate terminal prerequisites and conditions, with explicit Terraform change output and GitHub's implicit success(). */
 function ready(name, results, outputs, cancelled = false) {
   const dependencies = needs(name);
   if (dependencies.some(id => !['success', 'failure', 'cancelled', 'skipped'].includes(results[id]))) return false;
-  const context = Object.fromEntries(dependencies.map(id => [id, { result: results[id], outputs: id === 'prepare' ? outputs : {} }]));
+  const context = Object.fromEntries(dependencies.map(id => [id, { result: results[id], outputs: id === 'prepare' ? outputs : id === 'terraform-plan' ? { changes: outputs.changes } : {} }]));
   const condition = jobs[name].if ?? 'true';
   if (!/\b(?:always|cancelled|success|failure)\(/.test(condition) && dependencies.some(id => results[id] !== 'success')) return false;
   const expression = condition.replace(/\bneeds\.([\w-]+)/g, (_match, id) => `needs[${JSON.stringify(id)}]`);
@@ -60,7 +60,7 @@ test('server, native and OTA artifacts can build together before any deployment 
 });
 
 test('client delivery stays blocked until the selected server succeeds, including failures and skipped server paths', () => {
-  const results = { context: 'success', prepare: 'success', 'native-record': 'success', 'ota-export': 'success' };
+  const results = { context: 'success', prepare: 'success', 'native-record': 'success', 'ota-export': 'success', 'terraform-plan': 'skipped', 'terraform-apply': 'skipped' };
   for (const server of ['true', 'false']) for (const status of [undefined, 'in_progress', 'success', 'failure', 'cancelled', 'skipped'])
     for (const cancelled of [false, true]) for (const name of ['native-submit', 'ota-publish']) {
       const terminal = ['success', 'failure', 'cancelled', 'skipped'].includes(status);
@@ -71,6 +71,42 @@ test('client delivery stays blocked until the selected server succeeds, includin
   for (const status of ['failure', 'cancelled', 'skipped']) for (const name of ['native-submit', 'ota-publish'])
     assert.equal(ready(name, { ...deployed, 'native-record': status }, { server: 'true', native: 'true', submit: 'true' }), false);
   assert.equal(ready('ota-publish', { ...deployed, 'native-record': 'skipped' }, { server: 'true', native: 'false' }), true);
+});
+
+test('every production delivery waits for infrastructure, even without a selected server change', () => {
+  const base = { context: 'success', prepare: 'success', 'server-publish': 'success', 'server-deploy': 'skipped', 'native-record': 'success', 'ota-export': 'success' };
+  for (const name of ['server-deploy', 'native-submit', 'ota-publish']) {
+    for (const planning of ['success', 'failure', 'skipped', 'cancelled']) for (const changes of ['true', 'false', undefined])
+      for (const applying of ['success', 'failure', 'skipped', 'cancelled']) {
+        const results = { ...base, 'terraform-plan': planning, 'terraform-apply': applying };
+        const outputs = { terraform: 'true', server: 'false', native: 'true', submit: 'true', changes };
+        assert.equal(ready(name, results, outputs), planning === 'success' && (changes === 'false' || applying === 'success'),
+          `${name}: ${planning}/${changes}/${applying}`);
+        assert.equal(ready(name, results, outputs, true), false);
+      }
+    assert.equal(ready(name, { ...base, 'terraform-plan': 'skipped', 'terraform-apply': 'skipped' }, { terraform: 'false', server: 'false', submit: 'true' }), true);
+  }
+  assert.ok(needs('terraform-plan').includes('reserve'));
+  assert.equal(ready('terraform-apply', { context: 'success', 'terraform-plan': 'success' }, { changes: 'false' }), false);
+  assert.equal(ready('terraform-apply', { context: 'success', 'terraform-plan': 'failure' }, { changes: 'true' }), false);
+  assert.equal(ready('terraform-apply', { context: 'success', 'terraform-plan': 'success' }, { changes: 'true' }), true);
+});
+
+test('Terraform credentials and encrypted plan artifacts remain in dedicated jobs after tool setup', () => {
+  for (const name of ['terraform-plan', 'terraform-apply']) {
+    const job = jobs[name], steps = job.steps;
+    const auth = steps.findIndex(step => step.uses?.startsWith('google-github-actions/auth@'));
+    const setup = steps.findIndex(step => step.uses?.startsWith('hashicorp/setup-terraform@'));
+    assert.ok(auth > setup && setup > 0); assert.equal(steps[setup].with.terraform_wrapper, false);
+    assert.match(steps[setup].uses, /@[a-f0-9]{40}$/);
+    assert.match(job.environment.name ?? job.environment, /terraform_.*_environment/); assert.equal(job.permissions['id-token'], 'write');
+    assert.match(steps[auth].with.service_account, /GCP_TERRAFORM_SERVICE_ACCOUNT/);
+    assert.ok(!JSON.stringify(job).includes('GCP_RELEASE_SERVICE_ACCOUNT'));
+    assert.ok(!steps.some(step => step.run?.includes('worker.mjs install')));
+  }
+  assert.ok(!JSON.stringify(jobs['terraform-apply']).includes('TERRAFORM_VARS_JSON'));
+  for (const [name, job] of Object.entries(jobs)) if (!name.startsWith('terraform-'))
+    assert.ok(!JSON.stringify(job).includes('secrets.TERRAFORM_'));
 });
 
 test('submission waits for native evidence and selected server deployment', () => {
@@ -133,7 +169,7 @@ test('all artifacts are current-run downloads without arbitrary run or repositor
 });
 
 test('rerun producers restore their own completed artifacts and never overwrite successful output', () => {
-  for (const name of ['context', 'environment', 'prepare', 'native-start', 'native-build', 'server-build', 'ota-export']) {
+  for (const name of ['context', 'environment', 'prepare', 'native-start', 'native-build', 'server-build', 'ota-export', 'terraform-plan']) {
     const steps = jobs[name].steps;
     const upload = steps.find(step => step.uses?.includes('upload-artifact'));
     const restore = steps.find(step => step.uses === './.toolkit/.github/actions/setup');

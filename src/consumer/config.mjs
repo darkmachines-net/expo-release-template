@@ -1,10 +1,10 @@
-/** @file Validate separate release/development destinations and native builder groups; EAS owns build profiles. */
+/** @file Validate release/development destinations, distinct Terraform approval boundaries and native builder groups. */
 import Ajv from 'ajv';
 import { readJson, within, sourceEnvironment, hash } from '../io.mjs';
 import { assert } from '../engine.mjs';
 const validate = new Ajv({ allErrors: true }).compile(readJson(new URL('../../schemas/release.config.schema.json', import.meta.url)));
 
-/** Load only JSON, rejecting unsupported legacy contracts before any source or provider operation. */
+/** Load JSON and validate paths and isolated Terraform approval environments before any source or provider operation. */
 export function loadConfig(root = process.cwd()) {
   const value = readJson(within(root, 'release.config.json'));
   assert(validate(value), `Invalid release.config.json: ${JSON.stringify(validate.errors)}`);
@@ -15,6 +15,12 @@ export function loadConfig(root = process.cwd()) {
     sourceEnvironment(profile.publicEnvironment);
     if (value.mobile) assert(profile.channel && profile.easProfile, 'Mobile profiles need channel and easProfile.');
     if (value.server) assert(profile.deployEnvironment, 'Deployment needs a protected environment.');
+    if (profile.terraform) {
+      within(root, profile.terraform.directory);
+      const earlier = Object.values(value.profiles).flatMap(p => [p.approvalEnvironment, p.signingEnvironment, p.submitEnvironment, p.deployEnvironment, p.terraform?.planEnvironment]);
+      assert(![...earlier, value.development?.approvalEnvironment, value.development?.promotionEnvironment].includes(profile.terraform.applyEnvironment),
+        'Terraform apply needs a distinct reviewer environment after planning.');
+    }
   }
   if (value.development) {
     assert(value.mobile && !value.profiles.development, 'Development previews are separate from release profiles.');
