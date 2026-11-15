@@ -71,6 +71,17 @@ test('Terraform retries reuse confirmed apply receipts and isolate uncertain att
   await perform(client({ deployments: fake.deployments }), { ...value, run: 'fresh' }, 'apply/terraform', () => result);
 });
 
+test('a native target named terraform keeps its application identity separate from infrastructure', () => {
+  const value = plan(); value.config.mobile.targets[0].id = 'terraform';
+  const native = operationPayload(value, 'build/terraform');
+  assert.equal(native.input, value.observation.js.android);
+  assert.equal(native.destination, value.config.mobile.targets[0].applicationId);
+  value.config.profiles.production.terraform = { directory: 'infra' };
+  const infrastructure = operationPayload(value, 'apply/terraform');
+  assert.equal(infrastructure.input, value.source); assert.equal(infrastructure.version, value.versions.server);
+  assert.equal(infrastructure.fingerprint, null); assert.notEqual(infrastructure.destination, native.destination);
+});
+
 test('reservation writes immutable annotated tags before evidence', async () => {
   const fake = client(), value = plan(); await reserve(fake, value);
   const refs = fake.calls.filter(([method, route]) => method === 'POST' && route === 'git/refs');
