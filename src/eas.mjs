@@ -1,4 +1,4 @@
-/** @file Official EAS operations reconcile builds/submissions and verify managed or paired local counters. */
+/** @file Official EAS builds, signing repair, submission reconciliation and managed or paired counter verification. */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -100,6 +100,7 @@ export function verifyBuild(build, plan, target) {
  * EAS Build evaluates the consumer's source configuration with EXPO_TOKEN for existing
  * EAS-managed credentials. This authenticated evaluation is the explicit exception to
  * source-only execution; privileged submit/update publishers instead use inert projects.
+ * iOS leaves credentials unfrozen so EAS can repair provisioning profiles with its configured Apple access.
  */
 export async function cloudBuild(root, plan, target, command = eas) {
   const profile = plan.config.profiles[plan.profile];
@@ -122,7 +123,7 @@ export async function cloudBuild(root, plan, target, command = eas) {
     let id = accepted?.id;
     if (!id) {
       const result = command(['build', '--platform', target.platform, '--profile', profile.easProfile, '--message', message,
-        '--non-interactive', '--freeze-credentials', '--no-wait', '--json'], path.join(root, plan.config.mobile.directory),
+        '--non-interactive', ...(target.platform === 'ios' ? [] : ['--freeze-credentials']), '--no-wait', '--json'], path.join(root, plan.config.mobile.directory),
       { environment: { ...plan.environments[plan.profile], EAS_NO_VCS: '0' } });
       assert(Array.isArray(result) && result.length === 1 && result[0].id, 'EAS build acceptance is uncertain; retry will check EAS before building.');
       id = result[0].id;

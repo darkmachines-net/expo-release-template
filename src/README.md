@@ -13,3 +13,7 @@ Deployment consumes the confirmed GHCR publication digest, copies it without dig
 An uncertain deployment has no success receipt. A job retry may repeat those provider operations; migrations must be additive and idempotent. Confirmed entire operations are reused by `perform`. Databases are never rolled back automatically. Retain compatibility with older clients and rolling service revisions.
 
 Container smoke configuration supports `services.<name>.ready` (a command run inside the dependency) and `initialize` (a command in the exact built application image, before API startup). These use an owned Docker network and disposable containers without publication credentials. No production migration is run during smoke validation.
+
+## iOS store signing
+
+iOS cloud builds omit `--freeze-credentials` so the pinned EAS CLI can repair invalid provisioning profiles through its normal credential setup. Assign an App Store Connect team API key with provisioning access to the app in EAS, following [Expo's CI signing setup](https://docs.expo.dev/build/building-on-ci/#optional-provide-an-asc-api-token-for-your-apple-team). Android builds retain the flag. The toolkit delegates credential validation and repair to EAS; it has no separate signing preflight or Apple API adapter.

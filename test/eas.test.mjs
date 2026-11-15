@@ -1,4 +1,4 @@
-/** @file EAS contracts, isolated build/submission reconciliation, destination identity and exact OTA publication. */
+/** @file EAS credential flags, isolated build/submission reconciliation, destination identity and exact OTA publication. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -40,6 +40,25 @@ test('cloud build starts in the app directory and reads its exact ID through an 
     assert.ok(calls[1].args.includes('--no-wait')); assert.ok(calls[1].args.includes('--freeze-credentials'));
     assert.ok(!calls[1].args.includes('--auto-submit')); assert.deepEqual(calls[2].args, ['build:view', 'provider-id', '--json']);
     assert.equal(fs.existsSync(calls[2].cwd), false);
+  }
+});
+
+test('iOS cloud builds allow EAS provisioning repair and still reuse accepted builds on retry', async () => {
+  const value = plan(), target = value.config.mobile.targets[1];
+  const finished = { ...build(value), platform: 'IOS', fingerprint: { hash: value.observation.fingerprints.production.ios } };
+  for (const status of [undefined, 'FINISHED', 'IN_PROGRESS']) {
+    const calls = [];
+    await cloudBuild('source', value, target, args => {
+      calls.push(args[0]);
+      if (args[0] === 'build:list') return status ? [{ ...finished, status, message: `release:${value.run}:${target.id}` }] : [];
+      if (args[0] === 'build') {
+        assert.equal(args.includes('--freeze-credentials'), false);
+        assert.ok(args.includes('--non-interactive')); assert.ok(args.includes('--no-wait'));
+        return [{ id: finished.id }];
+      }
+      assert.equal(args[0], 'build:view'); return finished;
+    });
+    assert.deepEqual(calls, status ? ['build:list', 'build:view'] : ['build:list', 'build', 'build:view']);
   }
 });
 
