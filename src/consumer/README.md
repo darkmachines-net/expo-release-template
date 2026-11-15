@@ -6,6 +6,8 @@ This module owns the boundary between application code and the shared release wo
 
 `release.config.json` is authoritative and validated against the [package schema](../../schemas/release.config.schema.json). It declares repository/default branch, profiles, source input prefixes, application identity, version floors, metadata files, install commands and optional hooks. It does not define an execution graph. Each mobile profile names an EAS environment/channel/build profile; workflow environments govern approvals, signing, submission and deployment.
 
+Profiles can also configure [Terraform planning and approved apply](../README.md#terraform-before-delivery) before server or client delivery, including when only infrastructure has changed.
+
 Public source values come from `profiles.*.publicEnvironment` and declared `mobile.publicVariables` read from EAS. [readEnvironments](../eas.mjs) rejects undeclared values, hidden secrets and file variables because native compatibility must be inspectable before a build. Committed public values must agree with EAS.
 
 ## Hooks

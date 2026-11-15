@@ -1,4 +1,4 @@
-/** @file Dependency-free release selection from successful baselines and consumed versions, independent of prior failures. */
+/** @file Dependency-free component selection and unconditional configured infrastructure checks, independent of prior failures. */
 
 /** Require a release invariant before returning a decision. */
 export function assert(condition, message) {
@@ -39,6 +39,7 @@ export function nextPair(floor) {
  * A repository has one mobile version; profiles retain their own delivery baselines.
  * Native compatibility follows the latest reserved family, not submission or workflow success.
  * Failed or unacknowledged operations never prevent a fresh release from being selected.
+ * Configured Terraform checks live drift on every delivery without forcing application version bumps.
  */
 export function selectRelease(config, profile, observation, history = {}, rebuild = false) {
   assert(config.profiles[profile], 'Unknown release profile.');
@@ -64,17 +65,19 @@ export function selectRelease(config, profile, observation, history = {}, rebuil
     ? config.mobile.platforms.filter(platform => native || changedPlatforms.includes(platform)) : [];
   const server = !!config.server && (baselines[`${profile}/deploy/server`]?.input !== observation.server
     || (native && config.server.metadataOnNative === true));
+  const terraform = !!config.profiles[profile].terraform;
   const pair = native && config.mobile.pairCodeFloor !== undefined
     ? nextPair(Math.max(config.mobile.pairCodeFloor, history.mobile?.pairCodeFloor ?? 0)) : null;
   const operations = [
+    ...(terraform ? ['apply/terraform'] : []),
     ...(server ? ['publish/server', 'deploy/server'] : []),
     ...(native ? config.mobile.targets.flatMap(t => [`build/${t.id}`, ...(config.profiles[profile].submit ? [`submit/${t.id}`] : [])]) : []),
     ...ota.map(platform => `ota/${platform}`),
   ].map(key => `${profile}/${key}`);
   return {
-    format: 3, profile, server, native, ota, bump, runtime, pair, operations,
+    format: 3, profile, server, native, ota, bump, runtime, pair, operations, terraform,
     versions: { server: server ? increment(serverFloor, 'patch') : serverFloor ?? null, mobile: mobileVersion },
-    observation, noop: !server && !mobileChanged,
+    observation, noop: !server && !mobileChanged && !terraform,
   };
 }
 

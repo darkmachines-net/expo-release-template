@@ -1,4 +1,4 @@
-/** @file Immutable release evidence with bounded read retries; provider writes remain single-attempt. */
+/** @file Immutable application and infrastructure evidence with bounded read retries and single-attempt provider writes. */
 import { setTimeout as delay } from 'node:timers/promises';
 import { assert, compareVersions } from './engine.mjs';
 import { hash } from './io.mjs';
@@ -121,17 +121,17 @@ export async function reserve(client, plan) {
   return release.id;
 }
 
-/** Describe one fixed operation, including enough input identity to advance only its own baseline. */
+/** Bind one operation to its source and destination; infrastructure receipts never advance application baselines. */
 export function operationPayload(plan, operation) {
   const [kind, id] = operation.split('/');
   const target = plan.config.mobile?.targets.find(t => t.id === id);
   const platform = target?.platform ?? id;
   return { format: 3, key: `${plan.profile}/${operation}`, source: plan.source, build: plan.build, run: plan.run,
     toolkit: plan.toolkit, runtime: plan.runtime, version: target || kind === 'ota' ? plan.versions.mobile : plan.versions.server,
-    input: id === 'server' ? plan.observation.server : plan.observation.js[platform],
+    input: id === 'terraform' ? plan.source : id === 'server' ? plan.observation.server : plan.observation.js[platform],
     fingerprint: plan.observation.fingerprints[plan.profile]?.[platform] ?? null,
     ...(kind === 'build' ? { bundleKey: `${plan.profile}/bundle/${platform}`, bundleInput: plan.observation.js[platform] } : {}),
-    destination: id === 'server' ? plan.config.server.image : target?.applicationId ?? plan.config.profiles[plan.profile].channel };
+    destination: id === 'terraform' ? hash(plan.config.profiles[plan.profile].terraform) : id === 'server' ? plan.config.server.image : target?.applicationId ?? plan.config.profiles[plan.profile].channel };
 }
 
 /** Record intent once per workflow attempt; only a later explicit job retry may repeat unconfirmed work. */

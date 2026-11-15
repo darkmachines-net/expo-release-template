@@ -1,4 +1,4 @@
-# Prepare development candidates before manual beta approval, then serialize the existing release delivery paths.
+# Prepare development candidates before beta approval, then delegate serialized infrastructure and application delivery.
 name: Release Expo application
 on:
   workflow_call:
@@ -14,6 +14,8 @@ on:
       DEPLOY_WG_ENDPOINT: { required: false }
       DEPLOY_WG_PRIVATE_KEY: { required: false }
       DEPLOY_TOKEN: { required: false }
+      TERRAFORM_VARS_JSON: { required: false }
+      TERRAFORM_PLAN_KEY: { required: false }
 permissions: { contents: read }
 jobs:
   context:

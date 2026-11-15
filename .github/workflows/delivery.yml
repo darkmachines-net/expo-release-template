@@ -1,4 +1,4 @@
-# Build selected artifacts concurrently after promotion and reservation; gate client delivery on server readiness.
+# Build artifacts concurrently; gate server and client delivery on reviewed Terraform and server readiness.
 # Source, signing, publishing and deployment credentials stay in separate jobs; Android setup uses supported SDK packages.
 name: Deliver approved Expo release
 on:
@@ -15,6 +15,8 @@ on:
       DEPLOY_WG_ENDPOINT: { required: false }
       DEPLOY_WG_PRIVATE_KEY: { required: false }
       DEPLOY_TOKEN: { required: false }
+      TERRAFORM_VARS_JSON: { required: false }
+      TERRAFORM_PLAN_KEY: { required: false }
 permissions: { contents: read }
 concurrency: { group: expo-release, cancel-in-progress: false, queue: max }
 env:
@@ -31,6 +33,9 @@ jobs:
       deploy_environment: ${{ steps.context.outputs.deploy_environment }}
       deploy_provider: ${{ steps.context.outputs.deploy_provider }}
       cloud: ${{ steps.context.outputs.cloud }}
+      terraform_version: ${{ steps.context.outputs.terraform_version }}
+      terraform_plan_environment: ${{ steps.context.outputs.terraform_plan_environment }}
+      terraform_apply_environment: ${{ steps.context.outputs.terraform_apply_environment }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: &toolkit { repository: darkmachines-net/expo-release-template, ref: '${{ job.workflow_sha }}', path: .toolkit, persist-credentials: false }
@@ -68,6 +73,7 @@ jobs:
       ota: ${{ steps.prepare.outputs.ota }}
       native_matrix: ${{ steps.prepare.outputs.native_matrix }}
       build: ${{ steps.prepare.outputs.build }}
+      terraform: ${{ steps.prepare.outputs.terraform }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: *toolkit
@@ -92,6 +98,55 @@ jobs:
         with: { state: plan }
       - run: node .toolkit/bin/worker.mjs reserve
         env: { GITHUB_TOKEN: '${{ github.token }}' }
+  terraform-plan:
+    needs: [context, prepare, reserve]
+    if: needs.prepare.outputs.terraform == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ needs.context.outputs.terraform_plan_environment }}
+    permissions: { contents: read, id-token: write }
+    outputs:
+      changes: ${{ steps.plan.outputs.changes }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: *toolkit
+      - uses: ./.toolkit/.github/actions/setup
+        with: { state: plan, reuse: terraform-plan, directory: artifacts }
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with: { terraform_version: '${{ needs.context.outputs.terraform_version }}', terraform_wrapper: false }
+      - if: env.RELEASE_REUSE != 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with: &terraform-auth
+          workload_identity_provider: ${{ vars.GCP_TERRAFORM_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_SERVICE_ACCOUNT }}
+      - id: plan
+        run: node .toolkit/bin/worker.mjs terraform-plan
+        env: { TERRAFORM_VARS_JSON: '${{ secrets.TERRAFORM_VARS_JSON }}', TERRAFORM_PLAN_KEY: '${{ secrets.TERRAFORM_PLAN_KEY }}' }
+      - if: env.RELEASE_REUSE != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: { name: terraform-plan, path: artifacts, if-no-files-found: error }
+  terraform-apply:
+    needs: [context, terraform-plan]
+    if: needs.terraform-plan.outputs.changes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: ${{ needs.context.outputs.terraform_apply_environment }}
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    permissions: { contents: write, deployments: write, id-token: write }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: *toolkit
+      - uses: ./.toolkit/.github/actions/setup
+        with: { state: plan }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: { name: terraform-plan, path: artifacts }
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with: { terraform_version: '${{ needs.context.outputs.terraform_version }}', terraform_wrapper: false }
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with: *terraform-auth
+      - run: node .toolkit/bin/worker.mjs terraform-apply
+        env: { GITHUB_TOKEN: '${{ github.token }}', TERRAFORM_PLAN_KEY: '${{ secrets.TERRAFORM_PLAN_KEY }}' }
   server-build:
     needs: [prepare, reserve]
     if: needs.prepare.outputs.server == 'true'
@@ -126,7 +181,11 @@ jobs:
       - run: node .toolkit/bin/worker.mjs server-publish
         env: { GITHUB_TOKEN: '${{ github.token }}', GHCR_TOKEN: '${{ github.token }}' }
   server-deploy:
-    needs: [context, server-publish]
+    needs: [context, prepare, server-publish, terraform-plan, terraform-apply]
+    if: >-
+      !cancelled() && needs.server-publish.result == 'success' &&
+      (needs.prepare.outputs.terraform != 'true' || (needs.terraform-plan.result == 'success' &&
+      (needs.terraform-plan.outputs.changes == 'false' || needs.terraform-apply.result == 'success')))
     runs-on: ubuntu-latest
     environment: ${{ needs.context.outputs.deploy_environment }}
     permissions: { contents: write, deployments: write, packages: read, id-token: write }
@@ -232,10 +291,12 @@ jobs:
       - run: node .toolkit/bin/worker.mjs native-record
         env: { GITHUB_TOKEN: '${{ github.token }}', EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}' }
   native-submit:
-    needs: [context, prepare, native-record, server-deploy]
+    needs: [context, prepare, native-record, server-deploy, terraform-plan, terraform-apply]
     if: >-
       always() && !cancelled() && needs.prepare.outputs.submit == 'true' && needs.native-record.result == 'success' &&
-      (needs.prepare.outputs.server != 'true' || needs.server-deploy.result == 'success')
+      (needs.prepare.outputs.server != 'true' || needs.server-deploy.result == 'success') &&
+      (needs.prepare.outputs.terraform != 'true' || (needs.terraform-plan.result == 'success' &&
+      (needs.terraform-plan.outputs.changes == 'false' || needs.terraform-apply.result == 'success')))
     runs-on: ubuntu-latest
     environment: ${{ needs.context.outputs.submit_environment }}
     permissions: { contents: write, deployments: write }
@@ -269,11 +330,13 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with: { name: 'ota-${{ matrix.platform }}', path: artifacts, if-no-files-found: error }
   ota-publish:
-    needs: [context, prepare, ota-export, native-record, server-deploy]
+    needs: [context, prepare, ota-export, native-record, server-deploy, terraform-plan, terraform-apply]
     if: >-
       always() && !cancelled() && needs.ota-export.result == 'success' &&
       (needs.prepare.outputs.native != 'true' || needs.native-record.result == 'success') &&
-      (needs.prepare.outputs.server != 'true' || needs.server-deploy.result == 'success')
+      (needs.prepare.outputs.server != 'true' || needs.server-deploy.result == 'success') &&
+      (needs.prepare.outputs.terraform != 'true' || (needs.terraform-plan.result == 'success' &&
+      (needs.terraform-plan.outputs.changes == 'false' || needs.terraform-apply.result == 'success')))
     runs-on: ubuntu-latest
     environment: ${{ needs.context.outputs.approval }}
     permissions: { contents: write, deployments: write }

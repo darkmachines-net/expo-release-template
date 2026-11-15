@@ -1,4 +1,4 @@
-/** @file Independent selection, monotonic versions and stale-native OTA rejection across failed or successful builds. */
+/** @file Independent application selection, unconditional infrastructure checks and compatibility across failed or successful builds. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { selectRelease, increment, nextPair, compareVersions, assertCompatible } from '../src/engine.mjs';
@@ -17,6 +17,20 @@ test('no-op does not reserve versions or publish', () => {
   const result = selectRelease(config(), 'production', observation(), history());
   assert.equal(result.noop, true); assert.equal(result.bump, null);
   assert.deepEqual(result.operations, []); assert.deepEqual(result.versions, { server: '1.2.4', mobile: '1.0.0' });
+});
+
+test('configured Terraform checks drift even with unchanged app inputs and failed or successful infrastructure history', () => {
+  const value = config(); value.profiles.production.terraform = { directory: 'deploy/gcp' };
+  for (const state of [undefined, 'pending', 'failure', 'success']) {
+    const previous = history(); previous.baselines['production/apply/terraform'] = { state, input: 'same' };
+    const result = selectRelease(value, 'production', observation(), previous);
+    assert.equal(result.terraform, true); assert.equal(result.noop, false);
+    assert.equal(result.server, false); assert.equal(result.native, false); assert.deepEqual(result.ota, []);
+    assert.deepEqual(result.operations, ['production/apply/terraform']);
+    assert.deepEqual(result.versions, { server: '1.2.4', mobile: '1.0.0' });
+  }
+  value.profiles.beta = { ...value.profiles.production, terraform: undefined };
+  assert.equal(selectRelease(value, 'beta', observation(), history()).terraform, false);
 });
 
 test('server-only change increments its independent patch', () => {

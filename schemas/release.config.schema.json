@@ -23,6 +23,10 @@
         "submit": { "type": "boolean" }, "approvalEnvironment": { "type": "string" },
         "submitEnvironment": { "type": "string" }, "signingEnvironment": { "type": "string" },
         "deployEnvironment": { "type": "string" },
+        "terraform": { "type": "object", "additionalProperties": false, "required": ["directory", "version", "planEnvironment", "applyEnvironment"], "properties": {
+          "directory": { "type": "string", "minLength": 1 }, "version": { "$ref": "#/definitions/version" },
+          "planEnvironment": { "type": "string", "minLength": 1 }, "applyEnvironment": { "type": "string", "minLength": 1 }
+        } },
         "publicEnvironment": { "type": "object", "additionalProperties": { "type": "string" } }
       }
     } },

@@ -1,4 +1,4 @@
-/** @file Validate protected delivery identities and resume immutable post-approval release plans across native targets. */
+/** @file Resume immutable release plans and require reviewed Terraform success before protected application delivery. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { assert } from './engine.mjs';
@@ -10,6 +10,7 @@ import { eas, publisher, readEnvironments, verifyBuildFloors, cloudBuild, verify
 import { buildServer, commandBuild } from './build.mjs';
 import { connectAndDeploy } from './deploy.mjs';
 import { deployGcp } from './gcp.mjs';
+import { verifyTerraformApproval, planTerraform, readTerraformPlan, applyTerraform } from './terraform.mjs';
 
 /** Write one fixed workflow output without allowing multiline workflow-command injection. */
 export function output(key, value) {
@@ -42,7 +43,7 @@ export function nativeArtifacts(plan, artifacts) {
   return targets;
 }
 
-/** Execute a single internal workflow phase with an explicit checkout and artifact directory. */
+/** Execute a fixed phase against a bound checkout; Terraform review artifacts and apply receipts remain separate from app baselines. */
 export async function worker(phase, root, state) {
   const config = loadConfig(root), identity = hostedIdentity(config, process.env,
     process.env.RELEASE_PROFILE === 'beta' && config.development?.channel && config.development?.promotionEnvironment
@@ -55,15 +56,17 @@ export async function worker(phase, root, state) {
     verifyPins(root, identity.toolkit);
     assert(config.profiles[profile], 'Unknown profile.');
     const selected = config.profiles[profile];
+    await verifyTerraformApproval(client, selected.terraform);
     if (!reused) writeJson(contextFile, { ...identity, history: await loadHistory(client), config });
     const saved = readJson(contextFile);
     assert(Object.entries(identity).every(([key, value]) => saved[key] === value) && hash(saved.config) === hash(config), 'Restored context identity differs.');
     for (const [key, value] of Object.entries({ mobile: !!config.mobile, approval: selected.approvalEnvironment,
       signing: selected.signingEnvironment || selected.approvalEnvironment, submit_environment: selected.submitEnvironment || selected.approvalEnvironment,
+      terraform_version: selected.terraform?.version, terraform_plan_environment: selected.terraform?.planEnvironment, terraform_apply_environment: selected.terraform?.applyEnvironment,
       deploy_environment: selected.deployEnvironment, deploy_provider: config.server?.deployment.provider ?? 'webhook', cloud: nativeMatrix(config).some(t => t.builder === 'eas') })) output(key, value);
     return;
   }
-  if (reused && phase !== 'prepare') return;
+  if (reused && !['prepare', 'terraform-plan'].includes(phase)) return;
   if (phase === 'environment') {
     verifyBuildFloors(config);
     const context = readJson(contextFile); context.environments = readEnvironments(config); writeJson(contextFile, context); return;
@@ -95,13 +98,25 @@ export async function worker(phase, root, state) {
     }
     writeJson(planFile, plan);
     const builds = !plan.native ? [] : nativeMatrix(config);
-    for (const [key, value] of Object.entries({ noop: plan.noop, server: plan.server, native: plan.native, ota: plan.ota,
+    for (const [key, value] of Object.entries({ noop: plan.noop, server: plan.server, native: plan.native, ota: plan.ota, terraform: plan.terraform,
       native_matrix: builds, build: plan.build, submit: plan.native && config.profiles[profile].submit === true })) output(key, value);
     return;
   }
   const plan = readJson(planFile);
   verifyPlan(plan, config, identity);
   const selected = config.profiles[plan.profile], target = config.mobile?.targets.find(t => t.id === targetId);
+  if (phase === 'terraform-plan' || phase === 'terraform-apply') {
+    assert(plan.terraform && plan.operations.includes(`${plan.profile}/apply/terraform`), 'Terraform is not selected.');
+    const directory = path.join(artifacts, 'terraform');
+    if (phase === 'terraform-apply') await perform(client, plan, 'apply/terraform', () => applyTerraform(root, plan, directory));
+    else {
+      const saved = reused ? readTerraformPlan(directory, plan) : planTerraform(root, plan, directory);
+      output('changes', saved.changes);
+      if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+        `## Terraform ${plan.profile}: ${saved.changes ? 'changes require approval' : 'no changes'}\n<pre>${saved.review.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</pre>\n`);
+    }
+    return;
+  }
   if (phase === 'reserve') {
     git(root, ['fetch', path.resolve(state, 'build.bundle'), 'refs/heads/expo-release-build']);
     assert(git(root, ['rev-parse', `${plan.build}^`]) === plan.source, 'Build commit has an unexpected parent.');
