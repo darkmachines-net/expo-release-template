@@ -1,10 +1,10 @@
-/** @file Exercise isolated Terraform execution, exact encrypted plan handoff, no-op detection and approval boundaries without cloud access. */
+/** @file Exercise isolated Terraform, encrypted plans and confidential failure recovery, no-op detection and approval boundaries offline. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { planTerraform, applyTerraform, readTerraformPlan, verifyTerraformApproval } from '../src/terraform.mjs';
+import { planTerraform, applyTerraform, readTerraformPlan, readTerraformDiagnostic, verifyTerraformApproval } from '../src/terraform.mjs';
 import { loadConfig } from '../src/consumer/config.mjs';
 import { writeJson, seal, run } from '../src/io.mjs';
 import { temporary, plan } from './helpers.mjs';
@@ -48,6 +48,7 @@ test('changed plans encrypt sensitive bytes and apply exactly the reviewed plan 
   assert.equal(planTerraform(f.root, f.value, f.directory, f.env, f.execute).changes, true);
   assert.ok(!fs.readFileSync(path.join(f.directory, 'plan.enc')).includes(Buffer.from('private-input')));
   assert.deepEqual(fs.readdirSync(f.directory), ['plan.enc']);
+  assert.equal(fs.existsSync(`${f.directory}.failure.enc`), false, 'A changed plan is not a failed command.');
   assert.equal(readTerraformPlan(f.directory, f.value, f.env).changes, true);
   const result = applyTerraform(f.root, f.value, f.directory, f.env, f.execute);
   assert.equal(result.changed, true); assert.match(result.digest, /^[a-f0-9]{64}$/);
@@ -80,11 +81,15 @@ test('a retried workflow plan restores authenticated change outputs and review t
   assert.match(fs.readFileSync(summary, 'utf8'), /no changes.*\n<pre># resource.field changes/);
 });
 
-test('all failed plan exits block artifact production and clean sensitive temporary inputs', t => {
+test('failed plans retain only encrypted diagnostics, block usable artifacts and clean sensitive temporary inputs', t => {
   for (const code of [1, 3, null]) {
     const f = fixture(t, code);
-    assert.throws(() => planTerraform(f.root, f.value, f.directory, f.env, f.execute), /Terraform plan failed/);
+    assert.throws(() => planTerraform(f.root, f.value, f.directory, f.env, f.execute), error =>
+      error.message.includes('Terraform plan failed') && !error.message.includes('secret diagnostic'));
     assert.equal(fs.existsSync(f.directory), false);
+    const file = `${f.directory}.failure.enc`;
+    assert.ok(!fs.readFileSync(file).includes(Buffer.from('secret diagnostic')));
+    assert.deepEqual(readTerraformDiagnostic(file, f.value, f.env), { command: 'plan', code, stdout: '', stderr: 'secret diagnostic' });
     for (const directory of f.work) assert.equal(fs.existsSync(directory), false);
     assert.ok(!f.calls.some(args => ['show', 'apply'].includes(args[0])));
   }
@@ -99,6 +104,30 @@ test('stale or failed apply is attempted once and cleans decrypted bytes without
     return args[0] === 'version' ? '{"terraform_version":"1.13.5"}' : '';
   }), /Terraform apply failed/);
   assert.equal(attempts, 1); assert.equal(f.calls.filter(args => args[0] === 'plan').length, 1);
+  assert.equal(readTerraformDiagnostic(`${f.directory}.failure.enc`, f.value, f.env).stderr, 'stale saved plan');
+  assert.equal(readTerraformPlan(f.directory, f.value, f.env).changes, true, 'Failure evidence must not change the sealed plan.');
+  for (const directory of f.work) assert.equal(fs.existsSync(directory), false);
+});
+
+test('initialization failure diagnostics are bounded and authenticate identity, key and purpose before decryption', t => {
+  const f = fixture(t), file = `${f.directory}.failure.enc`;
+  assert.throws(() => planTerraform(f.root, f.value, f.directory, f.env, (command, args, options) => {
+    if (args[0] === 'init') throw Object.assign(new Error('private provider detail'), {
+      status: 1, stdout: Buffer.from('x'.repeat(1048600)), stderr: Buffer.from('secret provider error')
+    });
+    return f.execute(command, args, options);
+  }), /Terraform init failed/);
+  const diagnostic = readTerraformDiagnostic(file, f.value, f.env);
+  assert.equal(diagnostic.command, 'init'); assert.equal(diagnostic.stdout.length, 1048576);
+  assert.equal(diagnostic.stderr, 'secret provider error');
+  assert.throws(() => readTerraformDiagnostic(file, { ...f.value, run: 'other' }, f.env));
+  assert.throws(() => readTerraformDiagnostic(file, f.value, { TERRAFORM_PLAN_KEY: Buffer.alloc(32, 8).toString('base64') }));
+  const encrypted = fs.readFileSync(file), bytes = Buffer.from(encrypted); bytes[30] ^= 1; fs.writeFileSync(file, bytes);
+  assert.throws(() => readTerraformDiagnostic(file, f.value, f.env));
+  planTerraform(f.root, f.value, f.directory, f.env, f.execute);
+  assert.throws(() => readTerraformDiagnostic(path.join(f.directory, 'plan.enc'), f.value, f.env));
+  fs.writeFileSync(path.join(f.directory, 'plan.enc'), encrypted); seal(f.directory, f.value, 'terraform');
+  assert.throws(() => readTerraformPlan(f.directory, f.value, f.env));
   for (const directory of f.work) assert.equal(fs.existsSync(directory), false);
 });
 
