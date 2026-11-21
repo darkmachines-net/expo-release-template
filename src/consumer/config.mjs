@@ -1,4 +1,4 @@
-/** @file Validate release/development destinations, distinct Terraform approval boundaries and native builder groups. */
+/** @file Validate consumer configuration, pinned toolkit installations and trusted release plan identity. */
 import Ajv from 'ajv';
 import { readJson, within, sourceEnvironment, hash } from '../io.mjs';
 import { assert } from '../engine.mjs';
@@ -73,14 +73,14 @@ export function configured(config) {
   return { ...config, ...(config.mobile ? { mobile: { ...config.mobile, platforms: [...new Set(config.mobile.targets.map(t => t.platform))] } } : {}) };
 }
 
-/** Require package and workflow installation to name the exact immutable toolkit revision. */
+/** Require the consumer's scoped package and npm lock to match the full toolkit SHA used by the workflow. */
 export function verifyPins(root, sha) {
   assert(/^[a-f0-9]{40}$/.test(sha), 'Toolkit must be pinned to a full commit SHA.');
   const packageJson = readJson(within(root, 'package.json'));
-  const dependency = packageJson.devDependencies?.['@mchartier/expo-release'] ?? packageJson.dependencies?.['@mchartier/expo-release'];
+  const dependency = packageJson.devDependencies?.['@darkmachines-net/expo-release'] ?? packageJson.dependencies?.['@darkmachines-net/expo-release'];
   assert(dependency === `git+https://github.com/darkmachines-net/expo-release-template.git#${sha}`, 'Package/workflow toolkit pins differ.');
   const lock = readJson(within(root, 'package-lock.json'));
-  assert(lock.packages?.['node_modules/@mchartier/expo-release']?.resolved?.endsWith(`#${sha}`), 'Regenerate the consumer dependency lock normally.');
+  assert(lock.packages?.['node_modules/@darkmachines-net/expo-release']?.resolved?.endsWith(`#${sha}`), 'Regenerate the consumer dependency lock normally.');
 }
 
 /** Verify that source-generated plans cannot redirect the trusted publisher to other destinations. */

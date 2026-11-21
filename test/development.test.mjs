@@ -1,4 +1,4 @@
-/** @file Verify protected channel updates, platform artifact isolation, source pinning, client pairing and credential isolation. */
+/** @file Verify protected channel updates, platform artifact isolation, toolkit and source pins, client pairing and credential isolation. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -241,8 +241,8 @@ test('source branches resolve from origin without local or tag ambiguity; full S
 test('a retried context preserves its resolved commit when the source branch moves', async t => {
   const repo = repository(t), cfg = fixture(), toolkit = 'b'.repeat(40); delete cfg.mobile.platforms;
   repo.save('release.config.json', JSON.stringify(cfg));
-  repo.save('package.json', JSON.stringify({ devDependencies: { '@mchartier/expo-release': 'git+https://github.com/darkmachines-net/expo-release-template.git#' + toolkit } }));
-  repo.save('package-lock.json', JSON.stringify({ packages: { 'node_modules/@mchartier/expo-release': { resolved: 'git+https://github.com/darkmachines-net/expo-release-template.git#' + toolkit } } }));
+  repo.save('package.json', JSON.stringify({ devDependencies: { '@darkmachines-net/expo-release': 'git+https://github.com/darkmachines-net/expo-release-template.git#' + toolkit } }));
+  repo.save('package-lock.json', JSON.stringify({ packages: { 'node_modules/@darkmachines-net/expo-release': { resolved: 'git+https://github.com/darkmachines-net/expo-release-template.git#' + toolkit } } }));
   const source = repo.commit(); repo.git(['update-ref', 'refs/remotes/origin/feature/audio', source]);
   const state = temporary(t), env = { GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main',
     GITHUB_REPOSITORY: cfg.repository, GITHUB_SHA: source, TOOLKIT_SHA: toolkit, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1',

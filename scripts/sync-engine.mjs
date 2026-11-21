@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** @file Update consumer Git pins together and let npm regenerate its lockfile; no source snapshots are copied. */
+/** @file Pin each consumer's scoped toolkit dependency and reusable workflows to one commit and regenerate its npm lock. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { git, run, readJson, writeJson } from '../src/io.mjs';
@@ -9,8 +9,8 @@ assert(/^[a-f0-9]{40}$/.test(sha ?? '') && directories.length, 'Usage: node scri
 assert(git(process.cwd(), ['rev-parse', `${sha}^{commit}`]) === sha, 'Commit must exist before consumer pins are updated.');
 for (const directory of directories) {
   const root = path.resolve(directory), file = path.join(root, 'package.json'), pkg = readJson(file);
-  assert(pkg.devDependencies?.['@mchartier/expo-release'], 'Consumer must declare the toolkit as a development dependency.');
-  pkg.devDependencies['@mchartier/expo-release'] = `git+https://github.com/darkmachines-net/expo-release-template.git#${sha}`;
+  assert(pkg.devDependencies?.['@darkmachines-net/expo-release'], 'Consumer must declare @darkmachines-net/expo-release as a development dependency.');
+  pkg.devDependencies['@darkmachines-net/expo-release'] = `git+https://github.com/darkmachines-net/expo-release-template.git#${sha}`;
   writeJson(file, pkg);
   for (const name of ['release', 'development']) {
     const workflow = path.join(root, `.github/workflows/${name}.yml`);

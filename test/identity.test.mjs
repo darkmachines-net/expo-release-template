@@ -1,4 +1,4 @@
-/** @file Git input detection, retry artifact identity, partial native output and credential isolation. */
+/** @file Verify Git inputs, scoped toolkit pins, retry artifact identity, partial native output and credential isolation. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -136,13 +136,15 @@ test('artifact plans cannot change configured producer or destination', () => {
   assert.throws(() => verifyPlan(value, value.config, { ...identity, run: '124' }), /producer/);
 });
 
-test('package and lock must use the workflow full SHA', t => {
+test('the organization-scoped package and lock must use the workflow full SHA', t => {
   const root = temporary(t), sha = 'c'.repeat(40);
-  writeJson(path.join(root, 'package.json'), { devDependencies: { '@mchartier/expo-release': `git+https://github.com/darkmachines-net/expo-release-template.git#${sha}` } });
-  writeJson(path.join(root, 'package-lock.json'), { packages: { 'node_modules/@mchartier/expo-release': { resolved: `git+ssh://git@github.com/darkmachines-net/expo-release-template.git#${sha}` } } });
+  writeJson(path.join(root, 'package.json'), { devDependencies: { '@darkmachines-net/expo-release': `git+https://github.com/darkmachines-net/expo-release-template.git#${sha}` } });
+  writeJson(path.join(root, 'package-lock.json'), { packages: { 'node_modules/@darkmachines-net/expo-release': { resolved: `git+ssh://git@github.com/darkmachines-net/expo-release-template.git#${sha}` } } });
   verifyPins(root, sha); assert.throws(() => verifyPins(root, 'main'), /full commit/);
   assert.throws(() => verifyPins(root, 'd'.repeat(40)), /pins differ/);
-  writeJson(path.join(root, 'package.json'), { devDependencies: { '@mchartier/expo-release': `git+https://github.com/other/expo-release-template.git#${sha}` } });
+  writeJson(path.join(root, 'package-lock.json'), { packages: { 'node_modules/@other/expo-release': { resolved: `git+ssh://git@github.com/darkmachines-net/expo-release-template.git#${sha}` } } });
+  assert.throws(() => verifyPins(root, sha), /Regenerate the consumer dependency lock/);
+  writeJson(path.join(root, 'package.json'), { devDependencies: { '@darkmachines-net/expo-release': `git+https://github.com/other/expo-release-template.git#${sha}` } });
   assert.throws(() => verifyPins(root, sha), /pins differ/);
 });
 

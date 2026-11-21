@@ -43,7 +43,7 @@ Hooks are argv arrays executed in the consumer checkout. Each receives one JSON 
 
 ## Package helpers and fingerprints
 
-The root package exports source hashing/environment helpers from [io.mjs](../io.mjs) and selection/version helpers from [engine.mjs](../engine.mjs). `@mchartier/expo-release/engine` exposes the dependency-free engine. `@mchartier/expo-release/expo` exposes `runtimeVersion(version)`, `fingerprintTransform` and `developmentConfig` from [expo.cjs](expo.cjs). Other modules are internal.
+The root package exports source hashing/environment helpers from [io.mjs](../io.mjs) and selection/version helpers from [engine.mjs](../engine.mjs). `@darkmachines-net/expo-release/engine` exposes the dependency-free engine. `@darkmachines-net/expo-release/expo` exposes `runtimeVersion(version)`, `fingerprintTransform` and `developmentConfig` from [expo.cjs](expo.cjs). Other modules are internal.
 
 Use Expo's fingerprint configuration to exclude only allocated metadata. Retain native code, dependency versions, configuration and relevant environment inputs. [prepare](source.mjs) re-inspects compatibility after stamping and rejects a changed fingerprint family; consumer tests must also prove version stamping leaves fingerprints unchanged. The [serverless example](../../examples/expo-only/README.md) shows the configuration hooks in use.
 
@@ -51,7 +51,7 @@ Use Expo's fingerprint configuration to exclude only allocated metadata. Retain 
 
 Add a top-level `development` configuration with `easProfile: "development"`, an EAS environment, an existing `approvalEnvironment`, supported phone `platforms`, and declared `publicEnvironment` values including `EXPO_RELEASE_VARIANT: "development"`. It is separate from release profiles and has no store submission destination. The existing public EAS input rules apply. An optional `channel` and `promotionEnvironment` enable [continuous delivery](#continuous-delivery-to-beta); the native build profile itself remains channel-free.
 
-Install the Expo-SDK-compatible `expo-dev-client` and keep `expo-updates`. Wrap the final Expo config with `developmentConfig(config)` from `@mchartier/expo-release/expo`. It leaves release builds intact and gives the development app its own name, scheme, application ID and fingerprint runtime. It removes store deep-link ownership and the update-channel header. Development previews require the corresponding development native inputs; they do not validate the release-mode OTA startup lifecycle. Do the final candidate validation in beta.
+Install the Expo-SDK-compatible `expo-dev-client` and keep `expo-updates`. Wrap the final Expo config with `developmentConfig(config)` from `@darkmachines-net/expo-release/expo`. It leaves release builds intact and gives the development app its own name, scheme, application ID and fingerprint runtime. It removes store deep-link ownership and the update-channel header. Development previews require the corresponding development native inputs; they do not validate the release-mode OTA startup lifecycle. Do the final candidate validation in beta.
 
 The EAS development profile must set `developmentClient: true`, `distribution: "internal"`, `autoIncrement: false`, its declared environment and public env values, with no `channel` or inherited profile. Android produces an APK; physical iOS uses ad hoc signing and registered devices. Set up the new development application IDs and signing through official EAS tooling before noninteractive CI; existing store installations remain separate. Rebuild when native dependencies or configuration change.
 
@@ -66,14 +66,14 @@ The command exports the current working copy, including uncommitted edits, witho
 
 `npm run dev:native` starts Metro with the development app identity for local live reload. Add `-- --port 8082 --host 192.168.1.20` to select a port and advertised LAN IPv4; `--clear` and `--web` are also supported. `preview` uploads a self-contained bundle, so its recipient does not need Metro running. Both use declared public configuration; backend selection is independent of OTA channel selection.
 
-Consumers supervising a complete local stack can import `developmentServer(root, options)` from `@mchartier/expo-release/development`. It returns `{ command, args, cwd, env }` without starting processes; the consumer owns port allocation, spawning and cleanup. Options are `port`, `host`, `clear`, `web` and explicitly supplied `publicEnvironment` for application-specific API/proxy URLs. The environment excludes inherited credentials and disables dotenv; declared development values and the EAS build profile take precedence over caller overrides. Never supply secrets in `publicEnvironment`. Native identity remains owned by `developmentConfig`; consumers must not duplicate it.
+Consumers supervising a complete local stack can import `developmentServer(root, options)` from `@darkmachines-net/expo-release/development`. It returns `{ command, args, cwd, env }` without starting processes; the consumer owns port allocation, spawning and cleanup. Options are `port`, `host`, `clear`, `web` and explicitly supplied `publicEnvironment` for application-specific API/proxy URLs. The environment excludes inherited credentials and disables dotenv; declared development values and the EAS build profile take precedence over caller overrides. Never supply secrets in `publicEnvironment`. Native identity remains owned by `developmentConfig`; consumers must not duplicate it.
 
 ### Early development-client compatibility check
 
 Use the shared lazy entrypoint so an older development client cannot evaluate application imports requiring newly added native modules:
 
 ```js
-import { registerRootComponent } from '@mchartier/expo-release/register';
+import { registerRootComponent } from '@darkmachines-net/expo-release/register';
 registerRootComponent(() => require('./src/App').default);
 ```
 
