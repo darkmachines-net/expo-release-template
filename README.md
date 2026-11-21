@@ -8,7 +8,9 @@ See [provider execution](src/README.md) for Cloud Run/Firebase deployment, workl
 
 ## Install and configure
 
-Install `@mchartier/expo-release` from a reviewed full Git SHA and use that same SHA for `.github/workflows/release.yml`. Run `node scripts/sync-engine.mjs FULL_SHA CONSUMER...` from this repository to update consumer package/workflow pins and regenerate npm locks. It copies no engine snapshots.
+Declare `@darkmachines-net/expo-release` as a development dependency with `git+https://github.com/darkmachines-net/expo-release-template.git#FULL_SHA` as its value. Replace `FULL_SHA` with a reviewed full commit SHA and use that same SHA in `darkmachines-net/expo-release-template/.github/workflows/release.yml@FULL_SHA`.
+
+When upgrading from the former package scope, rename the dependency key and update toolkit imports in the same consumer change. Run `node scripts/sync-engine.mjs FULL_SHA CONSUMER...` from this repository to update consumer package and workflow pins and regenerate npm locks.
 
 Add a small [release.config.json](schemas/release.config.schema.json), an EAS profile for each release destination, and a `workflow_dispatch` caller. Profiles name the EAS environment/channel and existing protected GitHub environments. For development-first continuous delivery, add a default-branch `push` trigger and the [promotion configuration](src/consumer/README.md#continuous-delivery-to-beta). The reusable workflow verifies the protected default-branch invocation and serializes post-approval releases. Call it with `profile` and optional `rebuild`.
 
